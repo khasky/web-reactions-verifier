@@ -1,0 +1,19 @@
+{
+  "name": "web-reactions-verifier",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone verifier for the Web Reactions transparency log. Recomputes counters from the public log and checks the signed, anchored checkpoint — no backend code required.",
+  "bin": {
+    "web-reactions-verify": "src/verify.mjs"
+  },
+  "scripts": {
+    "verify": "node src/verify.mjs",
+    "selftest": "node src/revoke.selftest.mjs"
+  },
+  "packageManager": "pnpm@11.3.0",
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "opentimestamps": "^0.4.9"
+  }
+}

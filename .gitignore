@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Lockfiles — this project standardises on pnpm; keep pnpm-lock.yaml, drop the rest
+package-lock.json
+yarn.lock
+
+# Logs & debug output
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS cruft
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Tooling caches
+.code-review-graph/
+
+# Local scratch
+tmp/

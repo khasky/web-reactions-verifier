@@ -35,6 +35,24 @@ node src/verify.mjs --api https://api.webreactions.app \
 6. The log is internally consistent — every entry is well-formed and no count is ever driven impossibly negative.
 7. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
 
+### Revocations and account deletion
+
+Corrections are append-only too. If an account is erased, or if a counted
+reaction has to be reversed, Web Reactions does not edit or delete the original
+log leaf. It appends an `op=4` revocation leaf instead:
+
+- `revoke_seq` points at the original `op=1/2/3` leaf being reversed.
+- `reason_code` is a public machine-readable reason, such as `erasure_self`,
+  `erasure_admin`, or an abuse-correction label.
+- `evidence_hash` may pin a published evidence report; it is `null` for routine
+  account erasure.
+
+The verifier resolves each `revoke_seq` to the original leaf, applies the
+inverse effect while folding counters, checks that revokes are not dangling,
+forward, self-referential, or duplicated, and confirms that
+`GET /log/revocations` matches the `op=4` leaves actually present in the
+anchored log.
+
 Exit code `0` = PASS, `1` = FAIL. A failure means the published numbers don't match the log, or the log doesn't match its signed, anchored checkpoint — exactly what this is built to catch. It checks the **integrity** of the record; it does not, by itself, prove each reaction comes from a unique person — that is a separate concern.
 
 ### `--ots`: OpenTimestamps → Bitcoin deep audit

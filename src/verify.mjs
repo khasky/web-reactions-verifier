@@ -108,7 +108,7 @@ async function verifyOts(repo, pubkey, btcApi) {
     const result = await Ots.verify(detached, original, options);
     const att = result?.bitcoin ?? (result && typeof result === "object" ? Object.values(result)[0] : null);
     const height = att?.height ?? sidecar.btc_block_height;
-    check(!!att, `OTS: signed root anchored in Bitcoin (block ${height ?? "?"}, key_id=${sidecar.key_id})`);
+    check(!!att, `OTS: signed root anchored in Bitcoin (block ${height ?? "?"})`);
   } catch (e) {
     check(false, `OTS Bitcoin verification: ${e.message}`);
   }
@@ -146,7 +146,7 @@ async function main() {
 
   const cp = await getJson(`${api}/log/checkpoint`);
   const treeSize = Number(cp.tree_size);
-  console.log(`checkpoint: tree_size=${cp.tree_size} key_id=${cp.key_id} ts=${cp.ts}`);
+  console.log(`checkpoint: tree_size=${cp.tree_size} ts=${cp.ts}`);
 
   // 1. signature
   const sigOk = await verifySth(pubkey, hexToBytes(cp.signature), {

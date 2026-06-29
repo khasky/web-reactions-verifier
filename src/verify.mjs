@@ -3,7 +3,11 @@
 //   node src/verify.mjs --api https://api.webreactions.app \
 //     [--repo https://raw.githubusercontent.com/khasky/web-reactions-log/main] \
 //     [--pubkey <base64 raw Ed25519>] [--target github/1] [--limit 50] \
-//     [--ots] [--btc-api <block explorer base>]
+//     [--ots] [--btc-api <block explorer base>] [--json]
+//
+// --json prints a single machine-readable summary on stdout (result + per-check
+// pass/fail/skip + tree_size) instead of the human report — used by the status-page
+// ingest job. Human/info lines then go to stderr. Exit code is unchanged.
 //
 // Checks, in order:
 //   1. signed checkpoint (STH) Ed25519 signature with the pinned/--pubkey key
@@ -46,10 +50,28 @@ async function getJson(url) {
   return res.json();
 }
 
+// --json: emit ONE machine-readable summary on stdout (consumed by the status-page
+// ingest job) instead of the human report. The verification LOGIC is unchanged — this
+// only adds output formatting + a per-check accumulator. In --json mode the human
+// PASS/FAIL + info lines are redirected to stderr so stdout carries only the JSON.
+const JSON_MODE = process.argv.includes("--json");
+if (JSON_MODE) console.log = (...a) => console.error(...a);
+
+const checks = {};
+function record(key, status) {
+  if (checks[key] === "fail") return; // sticky: once a key fails it stays failed
+  if (status === "fail") {
+    checks[key] = "fail";
+    return;
+  }
+  if (checks[key] === undefined || checks[key] === "skip") checks[key] = status;
+}
+
 let failed = false;
-function check(ok, msg) {
+function check(ok, msg, key) {
   console.log(`${ok ? "PASS" : "FAIL"}  ${msg}`);
   if (!ok) failed = true;
+  if (key) record(key, ok ? "pass" : "fail");
 }
 
 // 6. (optional, --ots) deep audit: the matured OpenTimestamps proof anchors the
@@ -57,14 +79,14 @@ function check(ok, msg) {
 //    battle-tested opentimestamps library, imported only on demand.
 async function verifyOts(repo, pubkey, btcApi) {
   if (!repo) {
-    check(false, "OTS: --ots needs --repo (the .ots proof lives in the log repo)");
+    check(false, "OTS: --ots needs --repo (the .ots proof lives in the log repo)", "ots");
     return;
   }
   let latest;
   try {
     latest = await getJson(`${repo}/ots/latest.json`);
   } catch (e) {
-    check(false, `OTS: no matured proof published yet (ots/latest.json: ${e.message})`);
+    check(false, `OTS: no matured proof published yet (ots/latest.json: ${e.message})`, "ots");
     return;
   }
   const t = String(latest.tree_size);
@@ -76,7 +98,7 @@ async function verifyOts(repo, pubkey, btcApi) {
     rootHash: hexToBytes(sidecar.root_hash),
     ts: sidecar.ts,
   });
-  check(sigOk, `OTS sidecar is a signed checkpoint STH (tree_size=${t})`);
+  check(sigOk, `OTS sidecar is a signed checkpoint STH (tree_size=${t})`, "ots");
 
   // 6b. the .ots proof anchors that exact root in Bitcoin.
   let Ots;
@@ -84,7 +106,7 @@ async function verifyOts(repo, pubkey, btcApi) {
     const mod = await import("opentimestamps");
     Ots = mod.default ?? mod;
   } catch {
-    check(false, "OTS: opentimestamps not installed (run: pnpm install)");
+    check(false, "OTS: opentimestamps not installed (run: pnpm install)", "ots");
     return;
   }
   let otsBytes;
@@ -93,7 +115,7 @@ async function verifyOts(repo, pubkey, btcApi) {
     if (!res.ok) throw new Error(`GET ${sidecar.ots_path} -> ${res.status}`);
     otsBytes = Buffer.from(await res.arrayBuffer());
   } catch (e) {
-    check(false, `OTS: fetch proof: ${e.message}`);
+    check(false, `OTS: fetch proof: ${e.message}`, "ots");
     return;
   }
   try {
@@ -108,9 +130,9 @@ async function verifyOts(repo, pubkey, btcApi) {
     const result = await Ots.verify(detached, original, options);
     const att = result?.bitcoin ?? (result && typeof result === "object" ? Object.values(result)[0] : null);
     const height = att?.height ?? sidecar.btc_block_height;
-    check(!!att, `OTS: signed root anchored in Bitcoin (block ${height ?? "?"})`);
+    check(!!att, `OTS: signed root anchored in Bitcoin (block ${height ?? "?"})`, "ots");
   } catch (e) {
-    check(false, `OTS Bitcoin verification: ${e.message}`);
+    check(false, `OTS Bitcoin verification: ${e.message}`, "ots");
   }
 }
 
@@ -136,7 +158,7 @@ async function main() {
   const ots = process.argv.includes("--ots");
   const btcApi = arg("--btc-api");
   if (!api) {
-    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--ots] [--btc-api <url>]");
+    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--ots] [--btc-api <url>] [--json]");
     process.exit(2);
   }
   if (!pubkey) {
@@ -144,6 +166,7 @@ async function main() {
     process.exit(2);
   }
 
+  const startedAt = Date.now();
   const cp = await getJson(`${api}/log/checkpoint`);
   const treeSize = Number(cp.tree_size);
   console.log(`checkpoint: tree_size=${cp.tree_size} ts=${cp.ts}`);
@@ -154,7 +177,7 @@ async function main() {
     rootHash: hexToBytes(cp.root_hash),
     ts: cp.ts,
   });
-  check(sigOk, "checkpoint Ed25519 signature");
+  check(sigOk, "checkpoint Ed25519 signature", "signature");
 
   // 2. GitHub anchor cross-check
   if (repo) {
@@ -163,12 +186,14 @@ async function main() {
       check(
         latest.root_hash === cp.root_hash && String(latest.tree_size) === String(cp.tree_size),
         `GitHub anchor matches signed root (tree_size=${latest.tree_size})`,
+        "github_anchor",
       );
     } catch (e) {
-      check(false, `GitHub anchor fetch: ${e.message}`);
+      check(false, `GitHub anchor fetch: ${e.message}`, "github_anchor");
     }
   } else {
     console.log("SKIP  GitHub anchor cross-check (no --repo)");
+    record("github_anchor", "skip");
   }
 
   // 3. refetch all leaves, recompute leaf_hash + Merkle root
@@ -185,10 +210,10 @@ async function main() {
       entries.push(e);
     }
   }
-  check(leaves.length === treeSize, `fetched all ${treeSize} leaves (got ${leaves.length})`);
-  check(leafMismatch === 0, `every recomputed leaf_hash matches the served leaf (${leafMismatch} mismatch)`);
+  check(leaves.length === treeSize, `fetched all ${treeSize} leaves (got ${leaves.length})`, "merkle_root");
+  check(leafMismatch === 0, `every recomputed leaf_hash matches the served leaf (${leafMismatch} mismatch)`, "merkle_root");
   const root = await merkleRootFromLeaves(leaves);
-  check(bytesToHex(root) === cp.root_hash, "recomputed Merkle root == checkpoint root_hash");
+  check(bytesToHex(root) === cp.root_hash, "recomputed Merkle root == checkpoint root_hash", "merkle_root");
 
   // 4. fold + optional live counter comparison
   const counts = foldCounters(entries);
@@ -213,7 +238,9 @@ async function main() {
         console.log(`   mismatch ${r}: folded=${folded} served=${served}`);
       }
     }
-    check(mismatch === 0, `live /reactions/count matches the fold for ${target}`);
+    check(mismatch === 0, `live /reactions/count matches the fold for ${target}`, "counters");
+  } else {
+    record("counters", "skip");
   }
 
   // 4b. revocation audit surface: the public /log/revocations list must equal the
@@ -239,9 +266,10 @@ async function main() {
     check(
       op4.length === listed.length && op4.every((s, i) => s === listed[i]),
       `/log/revocations matches op=4 leaves in the log (${op4.length})`,
+      "revocations",
     );
   } catch (e) {
-    check(false, `/log/revocations fetch: ${e.message}`);
+    check(false, `/log/revocations fetch: ${e.message}`, "revocations");
   }
 
   // 5. structural consistency an honest log always satisfies: entries are
@@ -249,12 +277,25 @@ async function main() {
   const violations = checkStructuralInvariants(entries);
   for (const v of violations.slice(0, 20)) console.log(`   ${v}`);
   if (violations.length > 20) console.log(`   …and ${violations.length - 20} more`);
-  check(violations.length === 0, `structural invariants hold (${violations.length} violation(s))`);
+  check(violations.length === 0, `structural invariants hold (${violations.length} violation(s))`, "invariants");
 
   // 6. optional OpenTimestamps → Bitcoin deep audit.
   if (ots) await verifyOts(repo, pubkey, btcApi);
+  else record("ots", "skip");
 
-  console.log(failed ? "\nRESULT: FAIL" : "\nRESULT: PASS");
+  if (JSON_MODE) {
+    process.stdout.write(
+      JSON.stringify({
+        result: failed ? "fail" : "pass",
+        tree_size: cp.tree_size,
+        ts: Date.now(),
+        checks,
+        duration_sec: Math.round((Date.now() - startedAt) / 1000),
+      }) + "\n",
+    );
+  } else {
+    console.log(failed ? "\nRESULT: FAIL" : "\nRESULT: PASS");
+  }
   process.exit(failed ? 1 : 0);
 }
 

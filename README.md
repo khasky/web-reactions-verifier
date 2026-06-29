@@ -24,6 +24,7 @@ node src/verify.mjs --api https://api.webreactions.app \
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`.
 - `--btc-api <url>` (optional, with `--ots`): override the Bitcoin block-header source (default: a public explorer).
+- `--json` (optional): print one machine-readable summary (`{ result, tree_size, ts, checks, duration_sec }`) on stdout instead of the human report — used by the status job below. Human/info lines then go to stderr; the exit code is unchanged.
 
 ## What it checks
 
@@ -58,3 +59,9 @@ Exit code `0` = PASS, `1` = FAIL. A failure means the published numbers don't ma
 ### `--ots`: OpenTimestamps → Bitcoin deep audit
 
 This walks the matured `.ots` proof to a Bitcoin block and confirms the signed checkpoint root was committed there — proof the history couldn't be backdated. It is **opt-in** because it is network-bound (it queries a Bitcoin block explorer) and a checkpoint's Bitcoin attestation only matures hours after the checkpoint is signed. With `--ots` the verifier reads `ots/latest.json`, `ots/<tree_size>.json`, and `ots/<tree_size>.ots` from `--repo`, re-checks the checkpoint signature, then verifies the proof against Bitcoin using [`opentimestamps`](https://www.npmjs.com/package/opentimestamps) (installed by `pnpm install`, loaded only when `--ots` is used). The same `.ots` also verifies with the official `ots verify` CLI.
+
+### Status reporting (`--json` + scheduled report)
+
+The verifier doubles as the **independent** check behind the public status page at `webreactions.app/status`. The workflow `.github/workflows/verify-and-report.yml` runs daily (and on demand), executes `node src/verify.mjs --json …` against the public API + log, and POSTs the verdict to the API's `POST /status/ingest` endpoint; the status page renders it as the "Independent verification" component.
+
+To enable it on a fork, set on this repo a **variable** `LOG_PUBKEY` (the published key) and a **secret** `STATUS_INGEST_KEY` (matching the API's secret). The job runs without `--ots` — OpenTimestamps matures over days, and the status page tracks the Bitcoin anchor separately — so a young log isn't reported as failing.

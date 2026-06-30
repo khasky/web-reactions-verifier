@@ -26,6 +26,24 @@ node src/verify.mjs --api https://api.webreactions.app \
   --target github/1
 ```
 
+Example result:
+
+```bash
+checkpoint: tree_size=12 ts=1782799216388
+PASS  checkpoint Ed25519 signature
+PASS  GitHub anchor matches signed root (tree_size=12)
+PASS  fetched all 12 leaves (got 12)
+PASS  every recomputed leaf_hash matches the served leaf (0 mismatch)
+PASS  recomputed Merkle root == checkpoint root_hash
+folded 11 (site,target,reaction) counters from 12 events
+PASS  live /reactions/count matches the fold for github/1
+revocations: 0 tombstone(s)
+PASS  /log/revocations matches op=4 leaves in the log (0)
+PASS  structural invariants hold (0 violation(s))
+
+RESULT: PASS
+```
+
 The published signing key is pinned in `src/verify.mjs`, so `--pubkey` is optional; pass it to
 override (e.g. to verify against a different deployment).
 
@@ -86,6 +104,25 @@ pnpm selftest
 
 Runs `src/revoke.selftest.mjs`, an offline check of the revocation/`op=4` counter-folding logic
 against synthetic fixtures (no network). Exit `0` = PASS.
+
+Example result:
+
+```bash
+KAT canonical = 000000000000002a0000018bcfe5680004000000066769746875620000000667683a6f2f72ffffffffffffffffffffffff00000000000000070000000d737962696c5f636c757374657200000020000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+KAT leaf_hash = c14251e5131e9899fc7dda73a952a79c8ced0fce1f925811e271e482243b7da9
+PASS  fold: lone add => 1
+PASS  fold: add+revoke => 0
+PASS  fold: add+revoke+re-revoke => 0 (idempotent)
+PASS  fold: forward revoke is a no-op
+PASS  fold: revoke of switch re-credits prev
+PASS  invariants: valid revoke passes ()
+PASS  invariants D: dangling revoke_seq flagged
+PASS  invariants D: self-revoke flagged
+PASS  invariants D: forward revoke flagged
+PASS  invariants E: double-revoke flagged
+
+RESULT: PASS
+```
 
 ## License
 

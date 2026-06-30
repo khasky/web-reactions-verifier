@@ -10,16 +10,28 @@ pnpm install
 
 ## Run
 
+Run it without cloning via `npx`:
+
 ```
-node src/verify.mjs --api https://api.webreactions.app \
+npx web-reactions-verify --api https://api.webreactions.app \
   --repo https://raw.githubusercontent.com/khasky/web-reactions-log/main \
-  --pubkey <LOG_PUBKEY base64> \
   --target github/1
 ```
 
+…or from a checkout:
+
+```
+node src/verify.mjs --api https://api.webreactions.app \
+  --repo https://raw.githubusercontent.com/khasky/web-reactions-log/main \
+  --target github/1
+```
+
+The published signing key is pinned in `src/verify.mjs`, so `--pubkey` is optional; pass it to
+override (e.g. to verify against a different deployment).
+
 - `--api` (required): the public API base URL — serves `/log/*` and `/reactions/count`.
 - `--repo` (optional): GitHub raw base of the public log; cross-checks the signed root against the published anchor.
-- `--pubkey` (optional if you paste `PINNED_PUBKEY_B64` into `src/verify.mjs`): the published Ed25519 public key.
+- `--pubkey` (optional): the published Ed25519 public key (base64 raw). Defaults to the key pinned in `src/verify.mjs`.
 - `--target site/id` (optional): also compare the re-derived count to the live `/reactions/count` for one target.
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`.
@@ -65,3 +77,16 @@ This walks the matured `.ots` proof to a Bitcoin block and confirms the signed c
 The verifier doubles as the **independent** check behind the public status page at `webreactions.app/status`. The workflow `.github/workflows/verify-and-report.yml` runs daily (and on demand), executes `node src/verify.mjs --json …` against the public API + log, and POSTs the verdict to the API's `POST /status/ingest` endpoint; the status page renders it as the "Independent verification" component.
 
 To enable it on a fork, set on this repo a **variable** `LOG_PUBKEY` (the published key) and a **secret** `STATUS_INGEST_KEY` (matching the API's secret). The job runs without `--ots` — OpenTimestamps matures over days, and the status page tracks the Bitcoin anchor separately — so a young log isn't reported as failing.
+
+## Self-test
+
+```
+pnpm selftest
+```
+
+Runs `src/revoke.selftest.mjs`, an offline check of the revocation/`op=4` counter-folding logic
+against synthetic fixtures (no network). Exit `0` = PASS.
+
+## License
+
+[GPL-3.0-or-later](LICENSE).

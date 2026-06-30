@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // Standalone transparency-log verifier.
 //
 //   node src/verify.mjs --api https://api.webreactions.app \
@@ -34,8 +35,8 @@ import {
   verifySth,
 } from "./transparency.mjs";
 
-// Paste the published key here to make --pubkey optional.
-const PINNED_PUBKEY_B64 = "";
+// The published Web Reactions log signing key (base64 raw Ed25519). Pinned so --pubkey is optional.
+const PINNED_PUBKEY_B64 = "dgS8FvSLLx3wUH+I2W6fVSAmhybM3V9Ur6SmW1d5LKY=";
 
 const ENTRIES_PAGE = 1000;
 

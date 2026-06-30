@@ -1,15 +1,40 @@
 {
   "name": "web-reactions-verifier",
   "version": "1.0.0",
-  "private": true,
   "type": "module",
   "description": "Standalone verifier for the Web Reactions transparency log. Recomputes counters from the public log and checks the signed, anchored checkpoint — no backend code required.",
+  "license": "GPL-3.0-or-later",
+  "author": "khasky",
+  "homepage": "https://github.com/khasky/web-reactions-verifier#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khasky/web-reactions-verifier.git"
+  },
+  "bugs": {
+    "url": "https://github.com/khasky/web-reactions-verifier/issues"
+  },
+  "keywords": [
+    "web-reactions",
+    "transparency-log",
+    "verifier",
+    "merkle",
+    "ed25519",
+    "opentimestamps"
+  ],
   "bin": {
     "web-reactions-verify": "src/verify.mjs"
   },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "verify": "node src/verify.mjs",
     "selftest": "node src/revoke.selftest.mjs"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "packageManager": "pnpm@11.3.0",
   "dependencies": {

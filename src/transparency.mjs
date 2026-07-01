@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Standalone port of the transparency-log byte spec — this file IS the spec for
 // the verifier: the canonical, fixed wire formats are defined here, not in a
 // separate doc. Any deviation from them would make verification fail.

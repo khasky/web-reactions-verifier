@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Self-test for the revoke (op=4) track in the standalone verifier.
 //   node src/revoke.selftest.mjs
 //

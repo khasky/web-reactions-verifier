@@ -2,6 +2,11 @@
 
 A standalone, open-source tool that re-derives the Web Reactions counters from the **public** log and checks them against the signed, externally-anchored checkpoint — so the totals are provable, not just promised. It talks only to the public API and the public log; it has no privileged access.
 
+This verifier is paired with the public data repository
+[`web-reactions-log`](https://github.com/khasky/web-reactions-log). That repository
+holds the signed checkpoints and OpenTimestamps proofs; this repository holds the
+code that checks them.
+
 ## Install
 
 ```
@@ -10,7 +15,7 @@ pnpm install
 
 ## Run
 
-Run it without cloning via `npx`:
+Fast check, without cloning:
 
 ```
 npx web-reactions-verify --api https://api.webreactions.app \
@@ -44,15 +49,21 @@ PASS  structural invariants hold (0 violation(s))
 RESULT: PASS
 ```
 
-The published signing key is pinned in `src/verify.mjs`, so `--pubkey` is optional; pass it to
-override (e.g. to verify against a different deployment).
+The published signing key is pinned in `src/verify.mjs`, so `--pubkey` is optional
+for the main deployment. The current pinned key is:
+
+```text
+MZZMvWNdL8MXb0AzSvN3+XYnXeU126NWqfqyoZ1dLkU=
+```
+
+Pass `--pubkey` only to verify a different deployment or fork.
 
 - `--api` (required): the public API base URL — serves `/log/*` and `/reactions/count`.
 - `--repo` (optional): GitHub raw base of the public log; cross-checks the signed root against the published anchor.
 - `--pubkey` (optional): the published Ed25519 public key (base64 raw). Defaults to the key pinned in `src/verify.mjs`.
 - `--target site/id` (optional): also compare the re-derived count to the live `/reactions/count` for one target.
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
-- `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`.
+- `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`; slower and only passes after an OTS proof has matured.
 - `--btc-api <url>` (optional, with `--ots`): override the Bitcoin block-header source (default: a public explorer).
 - `--json` (optional): print one machine-readable summary (`{ result, tree_size, ts, checks, duration_sec }`) on stdout instead of the human report — used by the status job below. Human/info lines then go to stderr; the exit code is unchanged.
 
@@ -68,9 +79,19 @@ override (e.g. to verify against a different deployment).
 
 ### Revocations and account deletion
 
-Corrections are append-only too. If an account is erased, or if a counted
-reaction has to be reversed, Web Reactions does not edit or delete the original
-log leaf. It appends an `op=4` revocation leaf instead:
+The log records counter-changing events, not just final state:
+
+- `op=1` — a reaction was added.
+- `op=2` — a reaction was changed; the leaf records both the new reaction and
+  the previous one.
+- `op=3` — a reaction was removed by the user.
+- `op=4` — a revocation tombstone: a later public leaf that reverses an earlier
+  `op=1`, `op=2`, or `op=3` leaf.
+
+So a normal user "unreact" is `op=3`, not a tombstone. Tombstones are for
+append-only corrections. If an account is erased, or if a counted reaction has
+to be reversed, Web Reactions does not edit or delete the original log leaf. It
+appends an `op=4` revocation leaf instead:
 
 - `revoke_seq` points at the original `op=1/2/3` leaf being reversed.
 - `reason_code` is a public machine-readable reason, such as `erasure_self`,

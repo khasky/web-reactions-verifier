@@ -2,7 +2,7 @@
   "name": "web-reactions-verifier",
   "version": "1.0.0",
   "type": "module",
-  "description": "Standalone verifier for the Web Reactions transparency log. Recomputes counters from the public log and checks the signed, anchored checkpoint — no backend code required.",
+  "description": "Standalone CLI verifier for Web Reactions public counts and signed checkpoints",
   "license": "GPL-3.0-or-later",
   "author": "khasky",
   "homepage": "https://github.com/khasky/web-reactions-verifier#readme",

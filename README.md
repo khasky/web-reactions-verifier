@@ -64,7 +64,8 @@ Pass `--pubkey` only to verify a different deployment or fork.
 - `--target site/id` (optional): also compare the re-derived count to the live `/reactions/count` for one target.
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`; slower and only passes after an OTS proof has matured.
-- `--btc-api <url>` (optional, with `--ots`): override the Bitcoin block-header source (default: a public explorer).
+- `--btc-api <url>` (optional, with `--ots`): override the Esplora-compatible Bitcoin block-header source (default: `https://blockstream.info/api`).
+- `--ots-external <bin>` (optional, with `--ots`): also cross-check the same proof with an external OpenTimestamps CLI such as `ots`.
 - `--json` (optional): print one machine-readable summary (`{ result, tree_size, ts, checks, duration_sec }`) on stdout instead of the human report — used by the status job below. Human/info lines then go to stderr; the exit code is unchanged.
 
 ## What it checks
@@ -109,7 +110,11 @@ Exit code `0` = PASS, `1` = FAIL. A failure means the published numbers don't ma
 
 ### `--ots`: OpenTimestamps → Bitcoin deep audit
 
-This walks the matured `.ots` proof to a Bitcoin block and confirms the signed checkpoint root was committed there — proof the history couldn't be backdated. It is **opt-in** because it is network-bound (it queries a Bitcoin block explorer) and a checkpoint's Bitcoin attestation only matures hours after the checkpoint is signed. With `--ots` the verifier reads `ots/latest.json`, `ots/<tree_size>.json`, and `ots/<tree_size>.ots` from `--repo`, re-checks the checkpoint signature, then verifies the proof against Bitcoin using [`opentimestamps`](https://www.npmjs.com/package/opentimestamps) (installed by `pnpm install`, loaded only when `--ots` is used). The same `.ots` also verifies with the official `ots verify` CLI.
+This walks the matured `.ots` proof to a Bitcoin block and confirms the signed checkpoint root was committed there — proof the history couldn't be backdated. It is **opt-in** because it is network-bound (it queries a Bitcoin block explorer) and a checkpoint's Bitcoin attestation only matures hours after the checkpoint is signed.
+
+With `--ots` the verifier reads `ots/latest.json`, `ots/<tree_size>.json`, and `ots/<tree_size>.ots` from `--repo`, re-checks the checkpoint signature, parses the OpenTimestamps proof locally, and checks that the proof's Bitcoin commitment equals the merkle root in the attested block header. The built-in path has no `opentimestamps` npm dependency.
+
+By default `--btc-api` is `https://blockstream.info/api`; any Esplora-compatible API can be used instead. For an independent cross-check, install the official Python OpenTimestamps client and pass `--ots-external ots`; the verifier will also run `ots verify -d <root_hash> <proof.ots>` against the same proof.
 
 ### Status reporting (`--json` + scheduled report)
 
@@ -123,8 +128,7 @@ To enable it on a fork, set on this repo a **variable** `LOG_PUBKEY` (the publis
 pnpm selftest
 ```
 
-Runs `src/revoke.selftest.mjs`, an offline check of the revocation/`op=4` counter-folding logic
-against synthetic fixtures (no network). Exit `0` = PASS.
+Runs `src/revoke.selftest.mjs` and `src/ots.selftest.mjs`, offline checks of the revocation/`op=4` counter-folding logic and the dependency-clean OTS verifier against synthetic fixtures (no network). Exit `0` = PASS.
 
 Example result:
 

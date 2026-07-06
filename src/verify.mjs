@@ -5,7 +5,7 @@
 //   node src/verify.mjs --api https://api.webreactions.app \
 //     [--repo https://raw.githubusercontent.com/khasky/web-reactions-log/main] \
 //     [--pubkey <base64 raw Ed25519>] [--target github/1] [--limit 50] \
-//     [--ots] [--btc-api <block explorer base>] [--json]
+//     [--ots] [--btc-api <Esplora base>] [--ots-external <bin>] [--json]
 //
 // --json prints a single machine-readable summary on stdout (result + per-check
 // pass/fail/skip + tree_size) instead of the human report — used by the status-page
@@ -20,10 +20,10 @@
 //      negative counts) + /log/revocations matches the log
 //   6. (if --ots) deep audit: the matured OpenTimestamps proof anchors the signed
 //      checkpoint root in a Bitcoin block. Network-bound, so opt-in; needs
-//      --repo and the opentimestamps dependency (lazy-loaded).
+//      --repo and an Esplora-compatible block-header source.
 //
 // Exit code 0 = PASS, 1 = FAIL. The core checks (1–5) need only @noble/ed25519;
-// --ots additionally lazy-loads opentimestamps.
+// --ots is dependency-clean and uses only Node built-ins.
 
 import {
   bytesToHex,
@@ -35,6 +35,7 @@ import {
   merkleRootFromLeaves,
   verifySth,
 } from "./transparency.mjs";
+import { runExternalOts, verifyDetachedOtsProof } from "./ots-bitcoin.mjs";
 
 // The published Web Reactions log signing key (base64 raw Ed25519). Pinned so --pubkey is optional.
 const PINNED_PUBKEY_B64 = "MZZMvWNdL8MXb0AzSvN3+XYnXeU126NWqfqyoZ1dLkU=";
@@ -43,7 +44,9 @@ const ENTRIES_PAGE = 1000;
 
 function arg(name) {
   const i = process.argv.indexOf(name);
-  return i !== -1 ? process.argv[i + 1] : undefined;
+  if (i === -1) return undefined;
+  const value = process.argv[i + 1];
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 async function getJson(url) {
@@ -77,9 +80,10 @@ function check(ok, msg, key) {
 }
 
 // 6. (optional, --ots) deep audit: the matured OpenTimestamps proof anchors the
-//    signed checkpoint root in a Bitcoin block. The .ots is verified with the
-//    battle-tested opentimestamps library, imported only on demand.
-async function verifyOts(repo, pubkey, btcApi) {
+//    signed checkpoint root in a Bitcoin block. The .ots is verified by the
+//    dependency-clean built-in verifier; --ots-external can add an independent
+//    official CLI cross-check.
+async function verifyOts(repo, pubkey, btcApi, otsExternal) {
   if (!repo) {
     check(false, "OTS: --ots needs --repo (the .ots proof lives in the log repo)", "ots");
     return;
@@ -92,7 +96,13 @@ async function verifyOts(repo, pubkey, btcApi) {
     return;
   }
   const t = String(latest.tree_size);
-  const sidecar = await getJson(`${repo}/ots/${t}.json`);
+  let sidecar;
+  try {
+    sidecar = await getJson(`${repo}/ots/${t}.json`);
+  } catch (e) {
+    check(false, `OTS sidecar fetch: ${e.message}`, "ots");
+    return;
+  }
 
   // 6a. the sidecar is a real signed checkpoint STH (Ed25519) — no library needed.
   const sigOk = await verifySth(pubkey, hexToBytes(sidecar.signature), {
@@ -103,52 +113,45 @@ async function verifyOts(repo, pubkey, btcApi) {
   check(sigOk, `OTS sidecar is a signed checkpoint STH (tree_size=${t})`, "ots");
 
   // 6b. the .ots proof anchors that exact root in Bitcoin.
-  let Ots;
-  try {
-    const mod = await import("opentimestamps");
-    Ots = mod.default ?? mod;
-  } catch {
-    check(false, "OTS: opentimestamps not installed (run: pnpm install)", "ots");
-    return;
-  }
   let otsBytes;
   try {
     const res = await fetch(`${repo}/${sidecar.ots_path}`);
     if (!res.ok) throw new Error(`GET ${sidecar.ots_path} -> ${res.status}`);
-    otsBytes = Buffer.from(await res.arrayBuffer());
+    otsBytes = new Uint8Array(await res.arrayBuffer());
   } catch (e) {
     check(false, `OTS: fetch proof: ${e.message}`, "ots");
     return;
   }
+
   try {
-    const detached = readDetached(Ots, otsBytes);
-    const original = Ots.DetachedTimestampFile.fromHash(
-      new Ots.Ops.OpSHA256(),
-      Buffer.from(sidecar.root_hash, "hex"),
-    );
-    // --btc-api overrides the block-header source. The exact option key is
-    // version-specific (esplora/insight); confirm against the installed README.
-    const options = btcApi ? { explorers: [btcApi] } : {};
-    const result = await Ots.verify(detached, original, options);
-    const att = result?.bitcoin ?? (result && typeof result === "object" ? Object.values(result)[0] : null);
-    const height = att?.height ?? sidecar.btc_block_height;
-    check(!!att, `OTS: signed root anchored in Bitcoin (block ${height ?? "?"})`, "ots");
+    const result = await verifyDetachedOtsProof({
+      rootHashHex: sidecar.root_hash,
+      otsBytes,
+      btcApi,
+    });
+    check(true, `OTS: signed root anchored in Bitcoin (block ${result.height})`, "ots");
+    if (sidecar.btc_block_height != null) {
+      check(
+        Number(sidecar.btc_block_height) === result.height,
+        `OTS sidecar block height matches proof (${result.height})`,
+        "ots",
+      );
+    }
   } catch (e) {
     check(false, `OTS Bitcoin verification: ${e.message}`, "ots");
   }
-}
 
-// The detached-file deserializer differs across library versions: some take a
-// Buffer, some a StreamDeserialization context. Try both.
-function readDetached(Ots, bytes) {
-  if (Ots.Context?.StreamDeserialization) {
-    try {
-      return Ots.DetachedTimestampFile.deserialize(new Ots.Context.StreamDeserialization(bytes));
-    } catch {
-      /* fall through to the buffer form */
-    }
+  if (!otsExternal) return;
+  try {
+    await runExternalOts({
+      command: otsExternal,
+      rootHashHex: sidecar.root_hash,
+      otsBytes,
+    });
+    check(true, `OTS external verifier passed (${otsExternal})`, "ots_external");
+  } catch (e) {
+    check(false, `OTS external verifier: ${e.message}`, "ots_external");
   }
-  return Ots.DetachedTimestampFile.deserialize(bytes);
 }
 
 async function main() {
@@ -159,8 +162,17 @@ async function main() {
   const limit = arg("--limit") || "50";
   const ots = process.argv.includes("--ots");
   const btcApi = arg("--btc-api");
+  const otsExternal = arg("--ots-external");
   if (!api) {
-    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--ots] [--btc-api <url>] [--json]");
+    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
+    process.exit(2);
+  }
+  if (process.argv.includes("--ots-external") && !otsExternal) {
+    console.error("--ots-external needs a command path/name");
+    process.exit(2);
+  }
+  if (otsExternal && !ots) {
+    console.error("--ots-external requires --ots");
     process.exit(2);
   }
   if (!pubkey) {
@@ -282,7 +294,7 @@ async function main() {
   check(violations.length === 0, `structural invariants hold (${violations.length} violation(s))`, "invariants");
 
   // 6. optional OpenTimestamps → Bitcoin deep audit.
-  if (ots) await verifyOts(repo, pubkey, btcApi);
+  if (ots) await verifyOts(repo, pubkey, btcApi, otsExternal);
   else record("ots", "skip");
 
   if (JSON_MODE) {
@@ -298,10 +310,10 @@ async function main() {
   } else {
     console.log(failed ? "\nRESULT: FAIL" : "\nRESULT: PASS");
   }
-  process.exit(failed ? 1 : 0);
+  process.exitCode = failed ? 1 : 0;
 }
 
 main().catch((e) => {
   console.error("verifier error:", e);
-  process.exit(1);
+  process.exitCode = 1;
 });

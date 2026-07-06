@@ -31,14 +31,13 @@
   ],
   "scripts": {
     "verify": "node src/verify.mjs",
-    "selftest": "node src/revoke.selftest.mjs"
+    "selftest": "node src/revoke.selftest.mjs && node src/ots.selftest.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "packageManager": "pnpm@11.3.0",
   "dependencies": {
-    "@noble/ed25519": "^2.1.0",
-    "opentimestamps": "^0.4.9"
+    "@noble/ed25519": "^2.1.0"
   }
 }

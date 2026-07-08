@@ -1,19 +1,21 @@
-# Scheduled independent verification → status page.
+# Scheduled independent verification → status surface, for BOTH environments.
 #
-# Runs the real verifier against the public API + log and POSTs its PASS/FAIL verdict
-# to the Worker's status ingest endpoint, which drives the "Independent verification"
-# component on webreactions.app/status. This is the out-of-band, independent check the
-# Worker itself can't perform on its own data.
+# A matrix job runs the real verifier against each environment's public API + log and
+# POSTs its PASS/FAIL verdict to that environment's Worker status-ingest endpoint. This
+# is the out-of-band, independent check the Worker cannot perform on its own data.
 #
-# Required GitHub settings on this repo:
-#   - Variable  LOG_PUBKEY        — the published Ed25519 public key (base64). Public.
-#   - Secret    STATUS_INGEST_KEY — matches the Worker's STATUS_INGEST_KEY secret.
+# Required GitHub settings on THIS repo — per environment
+# (Settings → Environments → production / staging → add each):
+#   - Variable  LOG_PUBKEY        — that env's published Ed25519 public key (base64). Public.
+#   - Secret    STATUS_INGEST_KEY — matches that env's Worker STATUS_INGEST_KEY secret.
+# The prod and staging keys DIFFER (each env signs its own log), so they MUST live on
+# the environments, not as a single repo-level value. Leaving them repo-level (or as a
+# repo `Secret` for LOG_PUBKEY, which the workflow reads via `vars.`) resolves to empty.
 #
 # Note: --ots is intentionally omitted. OpenTimestamps matures over hours–days, so a
 # young log has no Bitcoin proof yet and --ots would report FAIL; the Bitcoin component
-# on the status page is derived separately (and leniently) by the Worker. This job
-# covers the core tamper-evidence checks (signature, Merkle re-fold, counters,
-# revocations, structural invariants).
+# is derived separately (and leniently) by the Worker. This job covers the core
+# tamper-evidence checks (signature, Merkle re-fold, counters, revocations, invariants).
 
 name: verify-and-report
 
@@ -25,17 +27,28 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: verify-and-report
-  cancel-in-progress: false
-
 jobs:
   verify:
+    name: verify (${{ matrix.target }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false # a staging failure must not cancel the production check
+      matrix:
+        include:
+          - target: production
+            api: https://api.webreactions.app
+            repo: https://raw.githubusercontent.com/khasky/web-reactions-log/main
+          - target: staging
+            api: https://api-staging.webreactions.app
+            repo: https://raw.githubusercontent.com/khasky/web-reactions-log-staging/main
+    environment: ${{ matrix.target }}
+    concurrency:
+      group: verify-and-report-${{ matrix.target }}
+      cancel-in-progress: false
     env:
-      API: https://api.webreactions.app
-      REPO: https://raw.githubusercontent.com/khasky/web-reactions-log/main
+      API: ${{ matrix.api }}
+      REPO: ${{ matrix.repo }}
       LOG_PUBKEY: ${{ vars.LOG_PUBKEY }}
       STATUS_INGEST_KEY: ${{ secrets.STATUS_INGEST_KEY }}
     steps:
@@ -56,7 +69,7 @@ jobs:
           code=$?
           set -e
           # If the verifier crashed before emitting JSON, synthesize an explicit fail so
-          # the status page reflects the failure instead of going stale.
+          # the status surface reflects the failure instead of going stale.
           if ! node -e "JSON.parse(require('fs').readFileSync('result.json','utf8'))" 2>/dev/null; then
             printf '{"result":"fail","checks":{"run":"fail"},"ts":%s000}\n' "$(date +%s)" > result.json
           fi

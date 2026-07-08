@@ -60,7 +60,10 @@ jobs:
         with:
           node-version: 24
 
-      - run: pnpm install
+      # Reproducible install: honor the committed lockfile, and skip dependency
+      # lifecycle scripts (the only dep is @noble/ed25519 — pure JS, no build), so a
+      # compromised transitive postinstall can't run with the job's secrets in scope.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run verifier (--json)
         run: |

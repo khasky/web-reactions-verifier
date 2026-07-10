@@ -131,9 +131,11 @@ async function verifyOts(repo, pubkey, btcApi, otsExternal) {
     });
     check(true, `OTS: signed root anchored in Bitcoin (block ${result.height})`, "ots");
     if (sidecar.btc_block_height != null) {
+      // A multi-calendar proof anchors in several blocks; the sidecar records one
+      // of them (the worker writes the earliest), so accept any anchored height.
       check(
-        Number(sidecar.btc_block_height) === result.height,
-        `OTS sidecar block height matches proof (${result.height})`,
+        result.heights.includes(Number(sidecar.btc_block_height)),
+        `OTS sidecar block height is anchored by the proof (${sidecar.btc_block_height})`,
         "ots",
       );
     }

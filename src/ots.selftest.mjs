@@ -46,6 +46,18 @@ function fetchFor({ headerHex, inBestChain = true, blockHash = "11".repeat(32) }
   };
 }
 
+// Serve several blocks at once: { [height]: { hash, headerHex } }.
+function fetchForBlocks(blocks) {
+  return async (url) => {
+    for (const [height, b] of Object.entries(blocks)) {
+      if (url.endsWith(`/block-height/${height}`)) return response(b.hash);
+      if (url.endsWith(`/block/${b.hash}/status`)) return response(JSON.stringify({ in_best_chain: true }));
+      if (url.endsWith(`/block/${b.hash}/header`)) return response(b.headerHex);
+    }
+    return response("not found", 404);
+  };
+}
+
 async function proofFixture({ multiBranch = false, unsupportedOnly = false } = {}) {
   const root = await sha256(utf8("checkpoint-root"));
   const salt = utf8("calendar-salt");
@@ -141,6 +153,38 @@ async function main() {
     fetchFn: fetchFor({ headerHex: headerHexForMerkleRoot(multi.attested) }),
   });
   check(multiOk.height === 800002, "built-in OTS verifier accepts one valid branch among invalid branches");
+
+  // Two calendars → two valid attestations in different blocks, the LATER one
+  // first in tree order. The verifier must report the earliest anchored height
+  // and list every anchored height, so the sidecar's recorded height can be
+  // checked against the full set (verify.mjs step 6b).
+  const rootTwo = await sha256(utf8("checkpoint-root-two"));
+  const saltTwo = utf8("cal-two");
+  const attestedA = await sha256(rootTwo);
+  const attestedB = await sha256(concatBytes(rootTwo, saltTwo));
+  const stampTwo = {
+    attestations: [],
+    ops: [
+      { op: { tag: OP_SHA256 }, child: { attestations: [bitcoinAttestation(800007)], ops: [] } },
+      {
+        op: { tag: OP_APPEND, arg: saltTwo },
+        child: {
+          attestations: [],
+          ops: [{ op: { tag: OP_SHA256 }, child: { attestations: [bitcoinAttestation(800003)], ops: [] } }],
+        },
+      },
+    ],
+  };
+  const twoOk = await verifyDetachedOtsProof({
+    rootHashHex: bytesToHex(rootTwo),
+    otsBytes: serializeDetached(rootTwo, stampTwo),
+    fetchFn: fetchForBlocks({
+      800003: { hash: "22".repeat(32), headerHex: headerHexForMerkleRoot(attestedB) },
+      800007: { hash: "33".repeat(32), headerHex: headerHexForMerkleRoot(attestedA) },
+    }),
+  });
+  check(twoOk.height === 800003, "built-in OTS verifier reports the earliest of several anchored blocks");
+  check(twoOk.heights.join(",") === "800003,800007", "built-in OTS verifier lists every anchored height ascending");
 
   const dir = await mkdtemp(path.join(tmpdir(), "web-reactions-ots-selftest-"));
   try {

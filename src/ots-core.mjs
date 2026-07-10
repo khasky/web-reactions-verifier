@@ -242,16 +242,23 @@ export async function applyOp(op, msg) {
   }
 }
 
-// First Bitcoin attestation height in the tree, or null if none (= still pending).
+// Earliest (minimum) Bitcoin attestation height in the tree, or null if none
+// (= still pending). A proof merged from several calendars carries several
+// Bitcoin attestations, and serialization reorders the tree — so "first found"
+// is nondeterministic. The minimum is stable, and it's the height the sidecar
+// records.
 export function bitcoinHeight(stamp) {
+  let best = null;
   for (const a of stamp.attestations) {
-    if (bytesEq(a.tag, BITCOIN_TAG)) return new Reader(a.payload).varuint();
+    if (!bytesEq(a.tag, BITCOIN_TAG)) continue;
+    const h = new Reader(a.payload).varuint();
+    if (best === null || h < best) best = h;
   }
   for (const { child } of stamp.ops) {
     const h = bitcoinHeight(child);
-    if (h !== null) return h;
+    if (h !== null && (best === null || h < best)) best = h;
   }
-  return null;
+  return best;
 }
 
 // Reconstruct the pending timestamp from raw calendar /digest responses.

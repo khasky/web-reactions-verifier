@@ -82,8 +82,15 @@ export async function verifyDetachedOtsProof({
     throw new Error(`OTS: no Bitcoin attestation found${suffix}`);
   }
 
+  // Validate every attestation, not just the first that passes: a proof merged
+  // from several calendars anchors in several blocks, and the sidecar's recorded
+  // height must be checked against the full set of genuinely anchored heights.
+  // `height`/`blockHash`/`merkleRoot` describe the earliest anchored block;
+  // `heights` lists every anchored height, ascending.
   const attempts = [];
-  for (const att of attestations) {
+  const anchored = new Map(); // height -> { blockHash, merkleRoot }
+  for (const att of [...attestations].sort((a, b) => a.height - b.height)) {
+    if (anchored.has(att.height)) continue;
     try {
       if (att.msg.length !== 32) {
         throw new Error(`attested message is ${att.msg.length} bytes, expected 32-byte merkle root`);
@@ -91,19 +98,20 @@ export async function verifyDetachedOtsProof({
       const { hash, header } = await blockHeaderByHeight(att.height, btcApi, fetchFn);
       const merkleRoot = header.subarray(36, 68);
       if (bytesEq(att.msg, merkleRoot)) {
-        return {
-          height: att.height,
-          blockHash: hash,
-          merkleRoot: bytesToHex(merkleRoot),
-        };
+        anchored.set(att.height, { blockHash: hash, merkleRoot: bytesToHex(merkleRoot) });
+      } else {
+        attempts.push(`block ${att.height}: merkle_root ${bytesToHex(merkleRoot)} != OTS ${bytesToHex(att.msg)}`);
       }
-      attempts.push(`block ${att.height}: merkle_root ${bytesToHex(merkleRoot)} != OTS ${bytesToHex(att.msg)}`);
     } catch (e) {
       attempts.push(`block ${att.height}: ${e.message}`);
     }
   }
 
-  throw new Error(`OTS: no Bitcoin attestation validated (${attempts.join("; ")})`);
+  if (anchored.size === 0) {
+    throw new Error(`OTS: no Bitcoin attestation validated (${attempts.join("; ")})`);
+  }
+  const heights = [...anchored.keys()].sort((a, b) => a - b);
+  return { height: heights[0], ...anchored.get(heights[0]), heights };
 }
 
 function spawnCapture(command, args, timeoutMs) {

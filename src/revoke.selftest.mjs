@@ -8,6 +8,7 @@
 import {
   bytesToHex,
   checkStructuralInvariants,
+  checkWipeCompleteness,
   counterKey,
   foldCounters,
   leafHash,
@@ -87,6 +88,52 @@ const dbl = checkStructuralInvariants([
   { seq: 3, op: 4, site: "s", target_id: "t", revoke_seq: 1 },
 ]);
 check(dbl.length === 1, "invariants E: double-revoke flagged");
+
+// --- invariant F: account-wipe completeness ------------------------------------
+// Fixtures need ts (grace math) and a 64-hex user_ref on op 1/2/3 leaves.
+const T0 = 1700000000000;
+const HR = 3_600_000;
+const TIP = T0 + 100 * HR; // checkpoint ts, far beyond the default 48h grace
+const U = "b".repeat(64);
+const V = "c".repeat(64);
+const wl = (seq, tgt, ref) => ({
+  seq,
+  ts: T0,
+  op: 1,
+  site: "s",
+  target_id: tgt,
+  reaction: "x",
+  prev_reaction: null,
+  user_ref: ref,
+});
+const rv = (seq, cites, ts) => ({ seq, ts, op: 4, site: "s", target_id: "t", revoke_seq: cites });
+const L = [wl(1, "t1", U), wl(2, "t2", U), wl(3, "t3", V)]; // U owns two leaves, V one
+
+check(
+  checkWipeCompleteness([...L, rv(4, 1, T0 + HR), rv(5, 2, T0 + HR)], TIP).length === 0,
+  "invariant F: complete wipe passes",
+);
+const part = checkWipeCompleteness([...L, rv(4, 1, T0 + HR)], TIP);
+check(
+  part.length === 1 && part[0].startsWith("seq=2"),
+  "invariant F: partial wipe flagged after grace",
+);
+check(
+  checkWipeCompleteness([...L, rv(4, 1, T0 + HR)], T0 + 2 * HR).length === 0,
+  "invariant F: partial wipe within grace passes",
+);
+check(checkWipeCompleteness(L, TIP).length === 0, "invariant F: un-wiped pseudonyms are not checked");
+// U owns three leaves; two are cited (one long ago, one just now), the third is not.
+// The RECENT revoke restarts U's grace clock, so the still-open wipe is not flagged.
+const L3 = [wl(1, "t1", U), wl(2, "t2", U), wl(3, "t3", U)];
+check(
+  checkWipeCompleteness([...L3, rv(4, 1, T0 + HR), rv(5, 2, TIP - HR)], TIP).length === 0,
+  "invariant F: a resumed wipe's newest revoke restarts the grace clock",
+);
+const fwd = checkWipeCompleteness([...L, rv(4, 1, TIP + HR)], TIP);
+check(fwd.length === 1, "invariant F: revoke timestamped after the checkpoint is flagged");
+const dangling4 = checkWipeCompleteness([...L, rv(4, 999, T0 + HR)], TIP);
+check(dangling4.length === 0, "invariant F: dangling revoke left to invariant D (no double-report)");
 
 console.log(failed ? "\nRESULT: FAIL" : "\nRESULT: PASS");
 process.exit(failed ? 1 : 0);

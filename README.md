@@ -63,6 +63,7 @@ Pass `--pubkey` only to verify a different deployment or fork.
 - `--pubkey` (optional): the published Ed25519 public key (base64 raw). Defaults to the key pinned in `src/verify.mjs`.
 - `--target site/id` (optional): also compare the re-derived count to the live `/reactions/count` for one target.
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
+- `--wipe-grace-hours N` (optional, default 48): grace window for the account-wipe completeness check — a pseudonym whose newest revocation is younger than this (relative to the checkpoint) counts as a wipe still in flight. A policy knob, not a proof parameter; auditors of a quiescent log may tighten it to `0`.
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`; slower and only passes after an OTS proof has matured.
 - `--btc-api <url>` (optional, with `--ots`): override the Esplora-compatible Bitcoin block-header source (default: `https://blockstream.info/api`).
 - `--ots-external <bin>` (optional, with `--ots`): also cross-check the same proof with an external OpenTimestamps CLI such as `ots`.
@@ -76,7 +77,8 @@ Pass `--pubkey` only to verify a different deployment or fork.
 4. The per-target counters are re-derived from the log (accounting for changes and removals); with `--target`, they must equal what the live API serves.
 5. The published revocation list matches the revocations actually present in the log.
 6. The log is internally consistent — every entry is well-formed and no count is ever driven impossibly negative.
-7. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
+7. Account wipes are complete — revocations are whole-account, so once any entry of a pseudonym is revoked, every entry of that pseudonym must be revoked. A partially revoked pseudonym is flagged, after a 48-hour grace window for wipes still in flight (`--wipe-grace-hours`).
+8. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
 
 ### Revocations and account deletion
 
@@ -105,6 +107,15 @@ inverse effect while folding counters, checks that revokes are not dangling,
 forward, self-referential, or duplicated, and confirms that
 `GET /log/revocations` matches the `op=4` leaves actually present in the
 anchored log.
+
+Revocations are whole-account. There is no per-vote reversal: erasing or
+deactivating an account revokes every entry that account wrote. The verifier
+enforces this as its account-wipe completeness check — if any entry of a
+pseudonym is cited by a revocation, all of that pseudonym's entries must be,
+so a single inconvenient vote cannot be quietly reversed under an
+account-operation label. Pseudonyms rotate per epoch, so completeness is
+checked per pseudonym; linking pseudonyms across epochs is impossible by
+design, as a privacy property of the log.
 
 Exit code `0` = PASS, `1` = FAIL. A failure means the published numbers don't match the log, or the log doesn't match its signed, anchored checkpoint — exactly what this is built to catch. It checks the **integrity** of the record; it does not, by itself, prove each reaction comes from a unique person — that is a separate concern.
 
@@ -145,6 +156,13 @@ PASS  invariants D: dangling revoke_seq flagged
 PASS  invariants D: self-revoke flagged
 PASS  invariants D: forward revoke flagged
 PASS  invariants E: double-revoke flagged
+PASS  invariant F: complete wipe passes
+PASS  invariant F: partial wipe flagged after grace
+PASS  invariant F: partial wipe within grace passes
+PASS  invariant F: un-wiped pseudonyms are not checked
+PASS  invariant F: a resumed wipe's newest revoke restarts the grace clock
+PASS  invariant F: revoke timestamped after the checkpoint is flagged
+PASS  invariant F: dangling revoke left to invariant D (no double-report)
 
 RESULT: PASS
 ```

@@ -5,7 +5,7 @@
 //   node src/verify.mjs --api https://api.webreactions.app \
 //     [--repo https://raw.githubusercontent.com/khasky/web-reactions-log/main] \
 //     [--pubkey <base64 raw Ed25519>] [--target github/1] [--limit 50] \
-//     [--ots] [--btc-api <Esplora base>] [--ots-external <bin>] [--json]
+//     [--wipe-grace-hours 48] [--ots] [--btc-api <Esplora base>] [--ots-external <bin>] [--json]
 //
 // --json prints a single machine-readable summary on stdout (result + per-check
 // pass/fail/skip + tree_size) instead of the human report — used by the status-page
@@ -17,7 +17,8 @@
 //   3. every leaf refetched, leaf_hash recomputed, Merkle root == checkpoint root
 //   4. counters re-derived; (if --target) compared to live /reactions/count
 //   5. structural consistency of the log (well-formed entries, no impossible
-//      negative counts) + /log/revocations matches the log
+//      negative counts) + /log/revocations matches the log + account-wipe
+//      completeness (a pseudonym partially revoked is flagged; --wipe-grace-hours)
 //   6. (if --ots) deep audit: the matured OpenTimestamps proof anchors the signed
 //      checkpoint root in a Bitcoin block. Network-bound, so opt-in; needs
 //      --repo and an Esplora-compatible block-header source.
@@ -28,6 +29,7 @@
 import {
   bytesToHex,
   checkStructuralInvariants,
+  checkWipeCompleteness,
   counterKey,
   foldCounters,
   hexToBytes,
@@ -162,11 +164,16 @@ async function main() {
   const pubkey = arg("--pubkey") || PINNED_PUBKEY_B64;
   const target = arg("--target");
   const limit = arg("--limit") || "50";
+  const wipeGraceHours = Number(arg("--wipe-grace-hours") ?? "48");
   const ots = process.argv.includes("--ots");
   const btcApi = arg("--btc-api");
   const otsExternal = arg("--ots-external");
   if (!api) {
-    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
+    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--pubkey <b64>] [--target site/id] [--wipe-grace-hours <n>] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
+    process.exit(2);
+  }
+  if (!Number.isFinite(wipeGraceHours) || wipeGraceHours < 0) {
+    console.error("--wipe-grace-hours needs a non-negative number");
     process.exit(2);
   }
   if (process.argv.includes("--ots-external") && !otsExternal) {
@@ -294,6 +301,18 @@ async function main() {
   for (const v of violations.slice(0, 20)) console.log(`   ${v}`);
   if (violations.length > 20) console.log(`   …and ${violations.length - 20} more`);
   check(violations.length === 0, `structural invariants hold (${violations.length} violation(s))`, "invariants");
+
+  // 5b. invariant F — account-wipe completeness. Revocations are whole-account,
+  //     so a pseudonym with some but not all of its leaves revoked is flagged
+  //     (after the grace window for wipes still in flight at checkpoint time).
+  const wipe = checkWipeCompleteness(entries, Number(cp.ts), wipeGraceHours * 3_600_000);
+  for (const v of wipe.slice(0, 20)) console.log(`   ${v}`);
+  if (wipe.length > 20) console.log(`   …and ${wipe.length - 20} more`);
+  check(
+    wipe.length === 0,
+    `account wipes are complete (${wipe.length} violation(s); grace ${wipeGraceHours}h)`,
+    "wipe_completeness",
+  );
 
   // 6. optional OpenTimestamps → Bitcoin deep audit.
   if (ots) await verifyOts(repo, pubkey, btcApi, otsExternal);

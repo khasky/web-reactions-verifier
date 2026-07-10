@@ -252,6 +252,65 @@ export function checkStructuralInvariants(entries) {
   return violations;
 }
 
+// Default grace for an in-progress or crash-resumed account wipe. A wipe is a single
+// synchronous request (seconds); a crash is resumed by a later re-POST whose revokes
+// carry a fresh ts, restarting the clock. 48h gives two daily verifier runs of slack
+// while bounding how long a half-wiped pseudonym can sit unreported. A policy knob,
+// not a proof parameter — auditors of a quiescent log may tighten it to 0.
+export const WIPE_GRACE_MS = 48 * 3_600_000;
+
+// Invariant F — account-wipe completeness. Revocations are whole-account: the log
+// operator has no per-vote reversal, so once ANY op=4 leaf cites a pseudonym's leaf,
+// EVERY op∈{1,2,3} leaf carrying that user_ref must be cited by some op=4 leaf. A
+// partially revoked pseudonym is the signature of a surgical vote removal dressed up
+// as an account operation, so it is flagged. Completeness is per-pseudonym: user_refs
+// rotate per epoch and cannot be linked across epochs (a privacy property of the log),
+// so each pseudonym of one account is checked independently.
+//
+// tipTs is the checkpoint ts; a pseudonym whose newest citing revoke is within graceMs
+// of it is treated as an in-progress wipe and skipped. A revoke timestamped AFTER the
+// checkpoint would keep its pseudonym in grace at every future verification, so it is
+// flagged instead of trusted (honest leaves predate the checkpoint that covers them).
+//
+// Returns an array of human-readable violation strings (empty = all hold).
+export function checkWipeCompleteness(entries, tipTs, graceMs = WIPE_GRACE_MS) {
+  const violations = [];
+  const bySeq = new Map(); // seq -> op∈{1,2,3} entry
+  const byRef = new Map(); // user_ref -> op∈{1,2,3} entries
+  const cited = new Set(); // seqs cited by any op=4
+  const wipedAt = new Map(); // user_ref -> newest citing revoke ts
+  for (const e of entries) {
+    if (e.op === 1 || e.op === 2 || e.op === 3) {
+      bySeq.set(String(e.seq), e);
+      if (e.user_ref != null) {
+        const list = byRef.get(e.user_ref) ?? [];
+        list.push(e);
+        byRef.set(e.user_ref, list);
+      }
+    } else if (e.op === 4) {
+      if (Number(e.ts) > tipTs) {
+        violations.push(`seq=${e.seq}: revoke ts=${e.ts} is after the checkpoint ts=${tipTs}`);
+        continue;
+      }
+      const t = e.revoke_seq == null ? null : bySeq.get(String(e.revoke_seq));
+      if (!t || t.user_ref == null) continue; // dangling/forward -> invariant D reports it
+      cited.add(String(t.seq));
+      const prev = wipedAt.get(t.user_ref);
+      if (prev === undefined || Number(e.ts) > prev) wipedAt.set(t.user_ref, Number(e.ts));
+    }
+  }
+  for (const [ref, newestTs] of wipedAt) {
+    if (tipTs - newestTs <= graceMs) continue; // in-progress / recently resumed wipe
+    for (const leaf of byRef.get(ref) ?? []) {
+      if (!cited.has(String(leaf.seq)))
+        violations.push(
+          `seq=${leaf.seq}: op=${leaf.op} leaf by wiped user_ref=${String(ref).slice(0, 12)}… not covered by any revoke (account-wipe incomplete)`,
+        );
+    }
+  }
+  return violations;
+}
+
 // Recompute a leaf hash from an /log/entries row (does NOT trust row.leaf_hash).
 export function leafHashFromEntry(e) {
   if (e.op === OP_REVOKE) {

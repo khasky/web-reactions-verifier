@@ -34,19 +34,37 @@ node src/verify.mjs --api https://api.webreactions.app \
 Example result:
 
 ```bash
-checkpoint: tree_size=12 ts=1782799216388
+checkpoint: tree_size=206 ts=1783677643656
 PASS  checkpoint Ed25519 signature
-PASS  GitHub anchor matches signed root (tree_size=12)
-PASS  fetched all 12 leaves (got 12)
+PASS  GitHub anchor matches signed root (tree_size=206)
+PASS  fetched all 206 leaves (got 206)
 PASS  every recomputed leaf_hash matches the served leaf (0 mismatch)
 PASS  recomputed Merkle root == checkpoint root_hash
-folded 11 (site,target,reaction) counters from 12 events
-PASS  live /reactions/count matches the fold for github/1
-revocations: 0 tombstone(s)
-PASS  /log/revocations matches op=4 leaves in the log (0)
+folded 165 (site,target,reaction) counters from 206 events
+revocations: 28 tombstone(s)
+   revoke seq=176 -> revoke_seq=167 reason=vote_manipulation target=facebook/photo:111111
+   revoke seq=177 -> revoke_seq=166 reason=vote_manipulation target=facebook/photo:111112
+   revoke seq=178 -> revoke_seq=165 reason=vote_manipulation target=facebook/photo:111113
+   revoke seq=179 -> revoke_seq=164 reason=vote_manipulation target=facebook/photo:111114
+   revoke seq=180 -> revoke_seq=163 reason=vote_manipulation target=facebook/photo:111115
+   revoke seq=181 -> revoke_seq=160 reason=vote_manipulation target=instagram/abc111
+   revoke seq=182 -> revoke_seq=158 reason=vote_manipulation target=instagram/abc112
+   revoke seq=183 -> revoke_seq=162 reason=vote_manipulation target=instagram/abc113
+   revoke seq=184 -> revoke_seq=161 reason=vote_manipulation target=instagram/abc114
+   revoke seq=185 -> revoke_seq=168 reason=vote_manipulation target=instagram/abc115
+   revoke seq=186 -> revoke_seq=169 reason=vote_manipulation target=instagram/abc115
+   revoke seq=187 -> revoke_seq=170 reason=vote_manipulation target=instagram/abc115
+   revoke seq=188 -> revoke_seq=171 reason=vote_manipulation target=instagram/abc115
+   revoke seq=189 -> revoke_seq=172 reason=vote_manipulation target=instagram/abc115
+   revoke seq=190 -> revoke_seq=173 reason=vote_manipulation target=instagram/abc115
+   revoke seq=191 -> revoke_seq=174 reason=vote_manipulation target=instagram/abc115
+   revoke seq=192 -> revoke_seq=156 reason=vote_manipulation target=instagram/abc116
+   revoke seq=193 -> revoke_seq=159 reason=vote_manipulation target=instagram/abc117
+   revoke seq=194 -> revoke_seq=175 reason=vote_manipulation target=instagram/abc118
+   revoke seq=195 -> revoke_seq=157 reason=vote_manipulation target=instagram/abc119
+PASS  /log/revocations matches op=4 leaves in the log (28)
 PASS  structural invariants hold (0 violation(s))
-
-RESULT: PASS
+PASS  account wipes are complete (0 violation(s); grace 48h)
 ```
 
 The published signing key is pinned in `src/verify.mjs`, so `--pubkey` is optional

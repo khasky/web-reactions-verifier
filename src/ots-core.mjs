@@ -1,7 +1,6 @@
-// Minimal, dependency-free OpenTimestamps proof handling mirrored from
-// web-reactions-workers/src/lib/ots-core.ts. Keep the wire/codec logic in these
-// two files in sync; the public verifier must not import from the private worker
-// repository at runtime.
+// Minimal, dependency-free OpenTimestamps proof handling, kept in lockstep with
+// the backend's OTS codec; the public verifier must not import from the backend
+// at runtime.
 //
 // Wire format (matches python-opentimestamps):
 //   - varuint: LEB128 unsigned (used for lengths and the block height)

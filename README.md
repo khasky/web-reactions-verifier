@@ -18,7 +18,7 @@ pnpm install
 Fast check, without cloning:
 
 ```
-npx web-reactions-verify --api https://api.webreactions.app \
+npx github:khasky/web-reactions-verifier --api https://api.webreactions.app \
   --repo https://raw.githubusercontent.com/khasky/web-reactions-log/main \
   --target github/1
 ```

@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Standalone CLI verifier for Web Reactions public counts and signed checkpoints",
   "license": "GPL-3.0-or-later",
-  "author": "khasky",
+  "author": "khasky (https://github.com/khasky)",
   "homepage": "https://github.com/khasky/web-reactions-verifier#readme",
   "repository": {
     "type": "git",
@@ -13,6 +13,20 @@
   "bugs": {
     "url": "https://github.com/khasky/web-reactions-verifier/issues"
   },
+  "funding": [
+    {
+      "type": "github",
+      "url": "https://github.com/sponsors/khasky"
+    },
+    {
+      "type": "patreon",
+      "url": "https://www.patreon.com/khasky"
+    },
+    {
+      "type": "ko-fi",
+      "url": "https://ko-fi.com/khasky"
+    }
+  ],
   "keywords": [
     "web-reactions",
     "transparency-log",
@@ -36,7 +50,7 @@
   "engines": {
     "node": ">=20"
   },
-  "packageManager": "pnpm@11.3.0",
+  "packageManager": "pnpm@11.13.0",
   "dependencies": {
     "@noble/ed25519": "^2.1.0"
   }

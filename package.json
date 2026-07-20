@@ -45,7 +45,7 @@
   ],
   "scripts": {
     "verify": "node src/verify.mjs",
-    "selftest": "node src/revoke.selftest.mjs && node src/ots.selftest.mjs"
+    "selftest": "node src/revoke.selftest.mjs && node src/ots.selftest.mjs && node src/archive.selftest.mjs"
   },
   "engines": {
     "node": ">=20"

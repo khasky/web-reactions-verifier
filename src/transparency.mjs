@@ -92,25 +92,47 @@ export function nodeHash(l, r) {
   return sha256(concatBytes(u8(NODE_PREFIX), l, r));
 }
 
-// Incremental (binary-counter) Merkle root over leaf hashes — O(N).
-export async function merkleRootFromLeaves(leaves) {
-  const fringe = [];
-  for (const leaf of leaves) {
-    let carry = leaf;
-    let level = 0;
-    while (fringe[level]) {
-      carry = await nodeHash(fringe[level], carry);
-      fringe[level] = null;
-      level++;
-    }
-    fringe[level] = carry;
+async function appendLeafToFringe(fringe, leaf) {
+  let carry = leaf;
+  let level = 0;
+  while (fringe[level]) {
+    carry = await nodeHash(fringe[level], carry);
+    fringe[level] = null;
+    level++;
   }
+  fringe[level] = carry;
+}
+
+async function rootOfFringe(fringe) {
   let root = null;
   for (let l = 0; l < fringe.length; l++) {
     if (!fringe[l]) continue;
     root = root === null ? fringe[l] : await nodeHash(fringe[l], root);
   }
   return root;
+}
+
+// Incremental (binary-counter) Merkle root over leaf hashes — O(N).
+export async function merkleRootFromLeaves(leaves) {
+  const fringe = [];
+  for (const leaf of leaves) await appendLeafToFringe(fringe, leaf);
+  return rootOfFringe(fringe);
+}
+
+// Roots of every historical prefix in `sizes`, from ONE pass over the leaves
+// (O(N + |sizes|·log N)). Feeds the checkpoint-archive replay: every signed
+// tree head ever published must equal the root recomputed at its tree_size
+// from today's leaves — i.e. all checkpoints lie on one append-only history.
+// Returns Map<size, rootBytes>; sizes beyond leaves.length are absent.
+export async function merkleRootsAtSizes(leaves, sizes) {
+  const want = new Set(sizes.map(Number));
+  const roots = new Map();
+  const fringe = [];
+  for (let i = 0; i < leaves.length; i++) {
+    await appendLeafToFringe(fringe, leaves[i]);
+    if (want.has(i + 1)) roots.set(i + 1, await rootOfFringe(fringe));
+  }
+  return roots;
 }
 
 export function sthBytes(treeSize, rootHash, ts) {

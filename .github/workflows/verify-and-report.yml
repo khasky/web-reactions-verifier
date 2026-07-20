@@ -66,6 +66,11 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Run verifier (--json)
+        env:
+          # Lifts the unauthenticated api.github.com quota for the checkpoint-archive
+          # listing (shared runner IPs are routinely rate-limited; without a token the
+          # archive check would downgrade to a skip instead of running).
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set +e
           node src/verify.mjs --json --api "$API" --repo "$REPO" --pubkey "$LOG_PUBKEY" > result.json

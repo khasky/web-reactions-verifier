@@ -91,6 +91,9 @@ Pass `--pubkey` only to verify a different deployment or fork.
 - `--target site/id` (optional): also compare the re-derived count to the live `/reactions/count` for one target.
 - `--limit N` (optional, default 50): cap on the reactions compared in the `--target` check.
 - `--wipe-grace-hours N` (optional, default 48): grace window for the account-wipe completeness check — a pseudonym whose newest revocation is younger than this (relative to the checkpoint) counts as a wipe still in flight. A policy knob, not a proof parameter; auditors of a quiescent log may tighten it to `0`.
+- `--max-checkpoint-age-hours N` (optional, default 168, `0` disables): flag a checkpoint older than this — a frozen snapshot passing every other check is still a stale view. A quiet log ages legitimately (checkpoints only advance on new votes), hence the generous default.
+- `--stats` (optional): print a per-day CSV (reactions, distinct pseudonymous authors, revocations) derived from the entries alone.
+- `--rekor` (optional, needs `--repo`): cross-check the newest `rekor/<tree_size>.json` sidecar against the actual Sigstore Rekor entry — an independently operated public log must hold exactly our signed checkpoint bytes.
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`; slower and only passes after an OTS proof has matured.
 - `--btc-api <url>` (optional, with `--ots`): override the Esplora-compatible Bitcoin block-header source (default: `https://blockstream.info/api`).
 - `--ots-external <bin>` (optional, with `--ots`): also cross-check the same proof with an external OpenTimestamps CLI such as `ots`.
@@ -99,14 +102,17 @@ Pass `--pubkey` only to verify a different deployment or fork.
 ## What it checks
 
 1. The checkpoint's Ed25519 signature against the pinned public key.
-2. (with `--repo`) the signed root matches the public GitHub anchor — catches a "split view" where the API shows you one history and everyone else another.
-3. Every log entry is refetched and the Merkle root is recomputed from scratch; it must equal the checkpoint's `root_hash`.
-4. (with `--repo`) the **checkpoint archive replays**: every checkpoint ever published to `checkpoints/*.ndjson` has a valid signature, no two published checkpoints disagree on one `tree_size`, timestamps are monotone, and every archived root equals the root recomputed from today's leaves at that `tree_size` — so the entire published history lies on ONE append-only line, and even an internally-consistent rewrite of the log fails.
-5. The per-target counters are re-derived from the log (accounting for changes and removals); with `--target`, they must equal what the live API serves.
-6. The published revocation list matches the revocations actually present in the log.
-7. The log is internally consistent — every entry is well-formed and no count is ever driven impossibly negative.
-8. Account wipes are complete — revocations are whole-account, so once any entry of a pseudonym is revoked, every entry of that pseudonym must be revoked. A partially revoked pseudonym is flagged, after a 48-hour grace window for wipes still in flight (`--wipe-grace-hours`).
-9. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
+2. The checkpoint is fresh (`--max-checkpoint-age-hours`) — a frozen-but-consistent snapshot is flagged, not silently accepted.
+3. (with `--repo`) the signed root matches the public GitHub anchor — catches a "split view" where the API shows you one history and everyone else another.
+4. Every log entry is refetched and the Merkle root is recomputed from scratch; it must equal the checkpoint's `root_hash`.
+5. (with `--repo`) the **checkpoint archive replays**: every checkpoint ever published to `checkpoints/*.ndjson` has a valid signature, no two published checkpoints disagree on one `tree_size`, timestamps are monotone, and every archived root equals the root recomputed from today's leaves at that `tree_size` — so the entire published history lies on ONE append-only line, and even an internally-consistent rewrite of the log fails.
+6. (with `--repo`) the **signed daily stats files** (`stats/<day>.json`) hold: the signature covers the canonical bytes, the day series is gap-free and keeps up with the checkpoint, and the log-derivable aggregates (`votes`, `unique_user_refs`, `revokes`) are recomputed from the entries and must match. `new_accounts` is the operator's irreversible public commitment (shape-checked), as is the monthly `epoch_continuity` count.
+7. The per-target counters are re-derived from the log (accounting for changes and removals); with `--target`, they must equal what the live API serves.
+8. The published revocation list matches the revocations actually present in the log.
+9. The log is internally consistent — every entry is well-formed and no count is ever driven impossibly negative.
+10. Account wipes are complete — revocations are whole-account, so once any entry of a pseudonym is revoked, every entry of that pseudonym must be revoked. A partially revoked pseudonym is flagged, after a 48-hour grace window for wipes still in flight (`--wipe-grace-hours`).
+11. (with `--rekor`) the newest Rekor sidecar resolves to a real Sigstore Rekor entry carrying exactly our signed checkpoint bytes, signature, and public key.
+12. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
 
 ### Revocations and account deletion
 
@@ -161,13 +167,17 @@ The verifier doubles as the **independent** check behind the public status page 
 
 To enable it on a fork, set on this repo a **variable** `LOG_PUBKEY` (the published key) and a **secret** `STATUS_INGEST_KEY` (matching the API's secret). The job runs without `--ots` — OpenTimestamps matures over days, and the status page tracks the Bitcoin anchor separately — so a young log isn't reported as failing.
 
+### Fork and audit
+
+You don't need the ingest secret to become an independent watcher: **fork this repository, enable Actions on the fork, and set the `LOG_PUBKEY` variable** — your fork then runs the full verification daily on infrastructure the operator doesn't control, and the run history on your fork is your own public audit trail (the report step simply skips without `STATUS_INGEST_KEY`). The more independent forks watching, the less anyone has to take the operator's word for anything.
+
 ## Self-test
 
 ```
 pnpm selftest
 ```
 
-Runs `src/revoke.selftest.mjs`, `src/ots.selftest.mjs`, and `src/archive.selftest.mjs` — offline checks of the revocation/`op=4` counter-folding logic, the dependency-clean OTS verifier, and the checkpoint-archive replay primitive against synthetic fixtures (no network). Exit `0` = PASS.
+Runs `src/revoke.selftest.mjs`, `src/ots.selftest.mjs`, and `src/archive.selftest.mjs` — offline checks of the revocation/`op=4` counter-folding logic, the dependency-clean OTS verifier, the checkpoint-archive replay primitive, and the signed daily-stats contract (canonical bytes + signature) against synthetic fixtures (no network). Exit `0` = PASS.
 
 Example result:
 

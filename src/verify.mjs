@@ -20,6 +20,7 @@
 //
 // Checks, in order:
 //   1. signed checkpoint (STH) Ed25519 signature with the pinned/--pubkey key
+//   1b. checkpoint freshness (--max-checkpoint-age-hours, default 168; 0 disables)
 //   2. (if --repo) the signed root matches the GitHub anchor  (split-view check)
 //   3. every leaf refetched, leaf_hash recomputed, Merkle root == checkpoint root
 //   3b. (if --repo) checkpoint-ARCHIVE replay: every STH ever published to
@@ -28,6 +29,13 @@
 //       monotone in tree_size, and each archived root equals the root recomputed
 //       from today's leaves at that tree_size — i.e. the whole published history
 //       lies on ONE append-only line (an internally-consistent rewrite fails here)
+//   3c. (if --repo) signed daily stats files (stats/<day>.json): signature over
+//       the canonical bytes, gap-free day series, and votes/unique_user_refs/
+//       revokes recomputed from the entries (new_accounts / epoch_continuity
+//       are operator commitments, shape-checked)
+//   3d. (if --rekor, needs --repo) the newest rekor/<tree_size>.json sidecar
+//       resolves to a real Sigstore Rekor entry carrying exactly our signed STH
+//       bytes, signature, and public key
 //   4. counters re-derived; (if --target) compared to live /reactions/count
 //   5. structural consistency of the log (well-formed entries, no impossible
 //      negative counts) + /log/revocations matches the log + account-wipe
@@ -35,6 +43,9 @@
 //   6. (if --ots) deep audit: the matured OpenTimestamps proof anchors the signed
 //      checkpoint root in a Bitcoin block. Network-bound, so opt-in; needs
 //      --repo and an Esplora-compatible block-header source.
+//
+// --stats additionally prints a per-day aggregate CSV (votes, unique pseudonyms,
+// revocations) derived from the entries alone.
 //
 // Exit code 0 = PASS, 1 = FAIL. The core checks need only @noble/ed25519;
 // --ots is dependency-clean and uses only Node built-ins.
@@ -44,11 +55,16 @@ import {
   checkStructuralInvariants,
   checkWipeCompleteness,
   counterKey,
+  dailyAggregates,
   foldCounters,
   hexToBytes,
   leafHashFromEntry,
   merkleRootFromLeaves,
   merkleRootsAtSizes,
+  sha256,
+  statsCanonicalBytes,
+  sthBytes,
+  verifySignature,
   verifySth,
 } from "./transparency.mjs";
 import { runExternalOts, verifyDetachedOtsProof } from "./ots-bitcoin.mjs";
@@ -191,22 +207,29 @@ function githubSlugFromRawBase(repo) {
   return m ? { owner: m[1], repo: m[2], ref: m[3] } : null;
 }
 
-async function fetchCheckpointArchive(repo) {
+// List file names in a log-repo directory via the GitHub contents API.
+// Returns { names } on success, { rateLimited: true } when throttled,
+// { missing: true } for an absent directory, or null for a non-GitHub base.
+// GITHUB_TOKEN (optional) lifts the 60/h unauthenticated api.github.com quota —
+// shared CI runner IPs hit it routinely. A rate-limited listing is GitHub
+// throttling us, not tamper evidence, so callers downgrade to a skip.
+async function listRepoDir(repo, dir) {
   const slug = githubSlugFromRawBase(repo);
   if (!slug) return null;
-  const listUrl = `https://api.github.com/repos/${slug.owner}/${slug.repo}/contents/checkpoints?ref=${slug.ref}`;
-  // GITHUB_TOKEN (optional) lifts the 60/h unauthenticated api.github.com quota —
-  // shared CI runner IPs hit it routinely. A rate-limited listing is GitHub
-  // throttling us, not tamper evidence, so it downgrades to a skip.
+  const listUrl = `https://api.github.com/repos/${slug.owner}/${slug.repo}/contents/${dir}?ref=${slug.ref}`;
   const token = process.env.GITHUB_TOKEN;
   const res = await fetch(listUrl, { headers: { accept: "application/vnd.github+json", ...(token ? { authorization: `Bearer ${token}` } : {}) } });
   if (res.status === 403 || res.status === 429) return { rateLimited: true };
+  if (res.status === 404) return { missing: true };
   if (!res.ok) throw new Error(`GET ${listUrl} -> ${res.status}`);
   const listing = await res.json();
-  const shards = (Array.isArray(listing) ? listing : [])
-    .map((f) => f.name)
-    .filter((n) => typeof n === "string" && n.endsWith(".ndjson"))
-    .sort();
+  return { names: (Array.isArray(listing) ? listing : []).map((f) => f.name).filter((n) => typeof n === "string") };
+}
+
+async function fetchCheckpointArchive(repo) {
+  const listed = await listRepoDir(repo, "checkpoints");
+  if (listed === null || listed.rateLimited) return listed;
+  const shards = (listed.names ?? []).filter((n) => n.endsWith(".ndjson")).sort();
   const sths = [];
   for (const name of shards) {
     const text = await getText(`${repo}/checkpoints/${name}`);
@@ -226,23 +249,25 @@ async function fetchCheckpointArchive(repo) {
 // Verify the published checkpoint history lies on one append-only line:
 // signatures, per-tree_size uniqueness, ts monotonicity, and every archived
 // root replayed from today's leaves. `leaves` = recomputed leaf hashes.
+// Returns the per-tree_size STH map for downstream checks (--rekor), or null
+// when the archive could not be read.
 async function verifyCheckpointArchive(repo, pubkey, cp, leaves) {
   let archive;
   try {
     archive = await fetchCheckpointArchive(repo);
   } catch (e) {
     check(false, `checkpoint archive fetch: ${e.message}`, "archive");
-    return;
+    return null;
   }
   if (archive === null) {
     console.log("SKIP  checkpoint-archive replay (--repo is not a raw.githubusercontent.com base)");
     record("archive", "skip");
-    return;
+    return null;
   }
   if (archive.rateLimited) {
     console.log("SKIP  checkpoint-archive replay (GitHub API rate-limited; set GITHUB_TOKEN to lift the quota)");
     record("archive", "skip");
-    return;
+    return null;
   }
   const malformed = archive.sths.filter((s) => s.parseError).length;
   check(malformed === 0, `checkpoint archive parses (${archive.sths.length} STH line(s) in ${archive.shards.length} shard(s))`, "archive");
@@ -294,7 +319,164 @@ async function verifyCheckpointArchive(repo, pubkey, cp, leaves) {
     }
   }
   check(rootMismatch === 0, `every archived root replays from today's leaves (${sizes.length} checkpoint(s), ${rootMismatch} mismatch)`, "archive");
+  return bySize;
 }
+
+// --- signed daily stats files (aggregate transparency) ---------------------
+
+const DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DAY_MS = 86_400_000;
+
+// Verify stats/<day>.json commitments: signature over the canonical bytes,
+// gap-free day series, and the three log-derivable aggregates recomputed from
+// the entries (votes / unique_user_refs / revokes). new_accounts is an
+// operator commitment (shape-checked only), as is epoch_continuity (needs the
+// secret salt by design).
+async function verifyStatsFiles(repo, pubkey, cp, entries) {
+  let listed;
+  try {
+    listed = await listRepoDir(repo, "stats");
+  } catch (e) {
+    check(false, `stats listing: ${e.message}`, "stats");
+    return;
+  }
+  if (listed === null || listed.rateLimited) {
+    console.log(`SKIP  daily stats files (${listed === null ? "--repo is not a raw.githubusercontent.com base" : "GitHub API rate-limited; set GITHUB_TOKEN"})`);
+    record("stats", "skip");
+    return;
+  }
+  const days = (listed.names ?? [])
+    .filter((n) => n.endsWith(".json") && DAY_RE.test(n.slice(0, -5)))
+    .map((n) => n.slice(0, -5))
+    .sort();
+  if (days.length === 0) {
+    console.log("SKIP  daily stats files (none published yet)");
+    record("stats", "skip");
+    return;
+  }
+
+  const perDay = dailyAggregates(entries);
+  let bad = 0;
+  const flag = (msg) => {
+    bad++;
+    console.log(`   ${msg}`);
+  };
+  for (const day of days) {
+    let file;
+    try {
+      file = await getJson(`${repo}/stats/${day}.json`);
+    } catch (e) {
+      flag(`stats ${day}: fetch failed (${e.message})`);
+      continue;
+    }
+    const { signature, v, ...payload } = file;
+    if (v !== 1 || payload.day !== day) {
+      flag(`stats ${day}: malformed file (v=${v}, day=${payload.day})`);
+      continue;
+    }
+    for (const k of ["new_accounts", "votes", "unique_user_refs", "revokes"]) {
+      if (!Number.isInteger(payload[k]) || payload[k] < 0) flag(`stats ${day}: ${k} missing or negative`);
+    }
+    const ec = payload.epoch_continuity;
+    if (ec !== undefined && !(Number.isInteger(ec?.from_epoch) && Number.isInteger(ec?.to_epoch) && ec.to_epoch === ec.from_epoch + 1 && Number.isInteger(ec?.accounts) && ec.accounts >= 0)) {
+      flag(`stats ${day}: malformed epoch_continuity`);
+    }
+    if (typeof signature !== "string" || !(await verifySignature(pubkey, hexToBytes(signature), statsCanonicalBytes(payload)))) {
+      flag(`stats ${day}: signature does not verify`);
+      continue;
+    }
+    // Recompute the derivable aggregates for days the checkpoint fully covers.
+    if (Date.parse(`${day}T00:00:00Z`) + DAY_MS <= Number(cp.ts)) {
+      const a = perDay.get(day) ?? { votes: 0, refs: new Set(), revokes: 0 };
+      if (payload.votes !== a.votes) flag(`stats ${day}: claims votes=${payload.votes}, log has ${a.votes}`);
+      if (payload.unique_user_refs !== a.refs.size) flag(`stats ${day}: claims unique_user_refs=${payload.unique_user_refs}, log has ${a.refs.size}`);
+      if (payload.revokes !== a.revokes) flag(`stats ${day}: claims revokes=${payload.revokes}, log has ${a.revokes}`);
+    }
+  }
+  // Gap-free series (missed days are backfilled server-side, so an interior
+  // hole means a day's commitment was skipped) + the series keeps up with the
+  // checkpoint (2-day lag allowance covers the daily publish cadence).
+  for (let i = 1; i < days.length; i++) {
+    const prev = Date.parse(`${days[i - 1]}T00:00:00Z`);
+    const cur = Date.parse(`${days[i]}T00:00:00Z`);
+    for (let t = prev + DAY_MS; t < cur; t += DAY_MS) flag(`stats series gap: ${new Date(t).toISOString().slice(0, 10)} missing`);
+  }
+  const lastDay = Date.parse(`${days[days.length - 1]}T00:00:00Z`);
+  if (Number(cp.ts) - (lastDay + DAY_MS) > 2 * DAY_MS) flag(`stats series stale: newest is ${days[days.length - 1]}, checkpoint is ${new Date(Number(cp.ts)).toISOString()}`);
+  check(bad === 0, `signed daily stats match the log (${days.length} day(s), ${bad} violation(s))`, "stats");
+}
+
+// --- Sigstore Rekor cross-check (--rekor) ----------------------------------
+
+// Confirm the newest rekor/<tree_size>.json sidecar points at a real Rekor
+// entry carrying exactly our signed STH bytes — i.e. an independently operated
+// public log witnessed this checkpoint. Needs the archive STHs (ts+signature
+// live there, not in the sidecar).
+async function verifyRekor(repo, pubkey, cp, archiveBySize) {
+  if (!archiveBySize) {
+    console.log("SKIP  Rekor cross-check (needs the checkpoint archive)");
+    record("rekor", "skip");
+    return;
+  }
+  let listed;
+  try {
+    listed = await listRepoDir(repo, "rekor");
+  } catch (e) {
+    check(false, `rekor listing: ${e.message}`, "rekor");
+    return;
+  }
+  if (listed === null || listed.rateLimited || listed.missing || (listed.names ?? []).length === 0) {
+    console.log("SKIP  Rekor cross-check (no rekor/ sidecars published)");
+    record("rekor", "skip");
+    return;
+  }
+  const sizes = listed.names
+    .filter((n) => /^\d+\.json$/.test(n))
+    .map((n) => Number(n.slice(0, -5)))
+    .filter((n) => n <= Number(cp.tree_size))
+    .sort((a, b) => a - b);
+  const newest = sizes[sizes.length - 1];
+  if (!newest) {
+    console.log("SKIP  Rekor cross-check (no sidecar at or below the current tree)");
+    record("rekor", "skip");
+    return;
+  }
+  try {
+    const sidecar = await getJson(`${repo}/rekor/${newest}.json`);
+    const sth = archiveBySize.get(String(newest));
+    check(!!sth && sidecar.root_hash === sth.root_hash, `rekor sidecar ${newest} matches the archived checkpoint`, "rekor");
+    if (!sth) return;
+    const rekorUrl = String(sidecar.rekor_url ?? "https://rekor.sigstore.dev").replace(/\/$/, "");
+    const entryResp = await getJson(`${rekorUrl}/api/v1/log/entries/${sidecar.rekor_uuid}`);
+    const entry = entryResp[sidecar.rekor_uuid] ?? Object.values(entryResp)[0];
+    if (!entry?.body) throw new Error("entry has no body");
+    const body = JSON.parse(Buffer.from(String(entry.body), "base64").toString("utf8"));
+    const spec = body?.spec ?? {};
+    const sthB = sthBytes(BigInt(newest), hexToBytes(sth.root_hash), Number(sth.ts));
+    let artifactOk = false;
+    if (spec.data?.content) {
+      artifactOk = Buffer.from(String(spec.data.content), "base64").equals(Buffer.from(sthB));
+    } else if (spec.data?.hash?.value) {
+      artifactOk = String(spec.data.hash.value).toLowerCase() === bytesToHex(await sha256(sthB));
+    }
+    check(artifactOk, `Rekor entry ${sidecar.rekor_uuid.slice(0, 12)}… holds the STH bytes of checkpoint ${newest}`, "rekor");
+    const sigOk = spec.signature?.content ? Buffer.from(String(spec.signature.content), "base64").equals(Buffer.from(hexToBytes(sth.signature))) : false;
+    check(sigOk, "Rekor entry carries our Ed25519 checkpoint signature", "rekor");
+    const pem = spec.signature?.publicKey?.content ? Buffer.from(String(spec.signature.publicKey.content), "base64").toString("utf8") : "";
+    check(pem.replace(/\s+/g, "").includes(pubkeyDerB64(pubkey).replace(/\s+/g, "")), "Rekor entry public key is the published log key", "rekor");
+  } catch (e) {
+    check(false, `Rekor cross-check: ${e.message}`, "rekor");
+  }
+}
+
+// SPKI DER (base64, no PEM armor) of the raw Ed25519 public key — what the PEM
+// body inside the Rekor entry must contain.
+function pubkeyDerB64(pubRawB64) {
+  const prefix = hexToBytes("302a300506032b6570032100");
+  const raw = Buffer.from(pubRawB64, "base64");
+  return Buffer.concat([Buffer.from(prefix), raw]).toString("base64");
+}
+
 
 // --- raw-leaf sources ------------------------------------------------------
 
@@ -339,6 +521,13 @@ async function main() {
   const otsExternal = arg("--ots-external");
   const entriesMode = arg("--entries") ?? "api";
   const shardSize = Number(arg("--shard-size") ?? DEFAULT_SHARD_SIZE);
+  const statsReport = process.argv.includes("--stats");
+  const rekor = process.argv.includes("--rekor");
+  const maxAgeHours = Number(arg("--max-checkpoint-age-hours") ?? "168");
+  if (!Number.isFinite(maxAgeHours) || maxAgeHours < 0) {
+    console.error("--max-checkpoint-age-hours needs a non-negative number (0 disables)");
+    process.exit(2);
+  }
   if (entriesMode !== "api" && entriesMode !== "repo") {
     console.error("--entries must be 'api' or 'repo'");
     process.exit(2);
@@ -351,7 +540,7 @@ async function main() {
   // then the checkpoint comes from the repo's latest.json and every API-only
   // comparison is skipped.
   if (!api && !(entriesMode === "repo" && repo)) {
-    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--entries api|repo] [--shard-size <n>] [--pubkey <b64>] [--target site/id] [--wipe-grace-hours <n>] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
+    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--entries api|repo] [--shard-size <n>] [--pubkey <b64>] [--target site/id] [--wipe-grace-hours <n>] [--max-checkpoint-age-hours <n>] [--stats] [--rekor] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
     process.exit(2);
   }
   if (entriesMode === "repo" && !repo) {
@@ -390,6 +579,16 @@ async function main() {
   });
   check(sigOk, "checkpoint Ed25519 signature", "signature");
 
+  // 1b. freshness — a stale checkpoint means the record you are auditing may be
+  // a frozen snapshot. A quiet log ages legitimately (checkpoints only advance
+  // on new votes), so the threshold is generous and tunable; 0 disables.
+  if (maxAgeHours > 0) {
+    const ageH = (Date.now() - Number(cp.ts)) / 3_600_000;
+    check(ageH <= maxAgeHours, `checkpoint is fresh (${ageH.toFixed(1)}h old, threshold ${maxAgeHours}h — a quiet log ages legitimately; tune --max-checkpoint-age-hours)`, "freshness");
+  } else {
+    record("freshness", "skip");
+  }
+
   // 2. GitHub anchor cross-check
   if (repo) {
     try {
@@ -425,11 +624,39 @@ async function main() {
 
   // 3b. checkpoint-archive replay: the whole PUBLISHED history must lie on one
   //     append-only line through today's leaves.
+  let archiveBySize = null;
   if (repo) {
-    await verifyCheckpointArchive(repo, pubkey, cp, leaves);
+    archiveBySize = await verifyCheckpointArchive(repo, pubkey, cp, leaves);
   } else {
     console.log("SKIP  checkpoint-archive replay (no --repo)");
     record("archive", "skip");
+  }
+
+  // 3c. signed daily stats files: aggregate commitments vs the log itself.
+  if (repo) {
+    await verifyStatsFiles(repo, pubkey, cp, entries);
+  } else {
+    console.log("SKIP  daily stats files (no --repo)");
+    record("stats", "skip");
+  }
+
+  // 3d. (--rekor) the newest checkpoint anchored to Sigstore Rekor really is
+  //     there, carrying exactly our signed STH bytes.
+  if (rekor && repo) {
+    await verifyRekor(repo, pubkey, cp, archiveBySize);
+  } else {
+    record("rekor", "skip");
+  }
+
+  // --stats: informational per-day aggregate report, derived from the entries
+  // alone (the same numbers anyone can recompute without the operator).
+  if (statsReport) {
+    const perDay = dailyAggregates(entries);
+    console.log("day,votes,unique_user_refs,revokes");
+    for (const day of [...perDay.keys()].sort()) {
+      const a = perDay.get(day);
+      console.log(`${day},${a.votes},${a.refs.size},${a.revokes}`);
+    }
   }
 
   // 4. fold + optional live counter comparison

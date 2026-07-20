@@ -141,6 +141,48 @@ export function sthBytes(treeSize, rootHash, ts) {
 export function verifySth(pubRawB64, sigBytes, sth) {
   return ed.verifyAsync(sigBytes, sthBytes(sth.treeSize, sth.rootHash, sth.ts), base64ToBytes(pubRawB64));
 }
+// Generic Ed25519 verification over arbitrary bytes (the daily stats files).
+export function verifySignature(pubRawB64, sigBytes, msgBytes) {
+  return ed.verifyAsync(sigBytes, msgBytes, base64ToBytes(pubRawB64));
+}
+
+// Canonical signed bytes of a daily stats file — the fixed text rendering the
+// backend signs (kept in lockstep with workers lib/log-stats.ts). Signing a
+// text form, not the JSON bytes, keeps the signature independent of JSON key
+// order/whitespace.
+export function statsCanonicalBytes(s) {
+  let text = `web-reactions-stats-v1\nday:${s.day}\nnew_accounts:${s.new_accounts}\nvotes:${s.votes}\nunique_user_refs:${s.unique_user_refs}\nrevokes:${s.revokes}\n`;
+  if (s.epoch_continuity) {
+    text += `epoch_continuity:${s.epoch_continuity.from_epoch}:${s.epoch_continuity.to_epoch}:${s.epoch_continuity.accounts}\n`;
+  }
+  return utf8(text);
+}
+
+// Per-UTC-day aggregates derivable from the public entries: reactions (op
+// 1/2/3), distinct pseudonyms among them, and revocations (op=4). Used by the
+// stats-file cross-check and the --stats report.
+export function dailyAggregates(entries) {
+  const perDay = new Map(); // YYYY-MM-DD -> { votes, refs:Set, revokes }
+  const dayOf = (ts) => new Date(Number(ts)).toISOString().slice(0, 10);
+  const bucket = (day) => {
+    let b = perDay.get(day);
+    if (!b) {
+      b = { votes: 0, refs: new Set(), revokes: 0 };
+      perDay.set(day, b);
+    }
+    return b;
+  };
+  for (const e of entries) {
+    if (e.op === 1 || e.op === 2 || e.op === 3) {
+      const b = bucket(dayOf(e.ts));
+      b.votes++;
+      if (e.user_ref != null) b.refs.add(e.user_ref);
+    } else if (e.op === 4) {
+      bucket(dayOf(e.ts)).revokes++;
+    }
+  }
+  return perDay;
+}
 
 export function counterKey(site, target, reaction) {
   return `${site}\x00${target}\x00${reaction}`;

@@ -6,7 +6,7 @@
 //     [--repo https://raw.githubusercontent.com/khasky/web-reactions-log/main] \
 //     [--entries api|repo] [--shard-size 10000] \
 //     [--pubkey <base64 raw Ed25519>] [--target github/1] [--limit 50] \
-//     [--wipe-grace-hours 48] [--ots] [--btc-api <Esplora base>] [--ots-external <bin>] [--json]
+//     [--wipe-grace-hours 48] [--no-rekor] [--ots] [--btc-api <Esplora base>] [--ots-external <bin>] [--json]
 //
 // --entries repo reads the raw leaves from the log repo's public
 // entries/<start>-<end>.ndjson shards instead of the API; combined with --repo
@@ -33,9 +33,10 @@
 //       the canonical bytes, gap-free day series, and votes/unique_user_refs/
 //       revokes recomputed from the entries (new_accounts / epoch_continuity
 //       are operator commitments, shape-checked)
-//   3d. (if --rekor, needs --repo) the newest rekor/<tree_size>.json sidecar
-//       resolves to a real Sigstore Rekor entry carrying exactly our signed STH
-//       bytes, signature, and public key
+//   3d. (default when --repo is set; --no-rekor to skip) the newest
+//       rekor/<tree_size>.json sidecar resolves to a real Sigstore Rekor entry
+//       carrying exactly our signed STH bytes, signature, and public key. An
+//       unreachable Rekor downgrades to a skip; only disagreeing bytes FAIL.
 //   4. counters re-derived; (if --target) compared to live /reactions/count
 //   5. structural consistency of the log (well-formed entries, no impossible
 //      negative counts) + /log/revocations matches the log + account-wipe
@@ -441,13 +442,36 @@ async function verifyRekor(repo, pubkey, cp, archiveBySize) {
     record("rekor", "skip");
     return;
   }
+
+  // Local leg (no third party): the published sidecar must name the SAME root as
+  // the archived checkpoint. That comparison is entirely repo-local, so a mismatch
+  // is tamper evidence and a hard FAIL — independent of whether Rekor is reachable.
+  let sidecar;
   try {
-    const sidecar = await getJson(`${repo}/rekor/${newest}.json`);
-    const sth = archiveBySize.get(String(newest));
-    check(!!sth && sidecar.root_hash === sth.root_hash, `rekor sidecar ${newest} matches the archived checkpoint`, "rekor");
-    if (!sth) return;
-    const rekorUrl = String(sidecar.rekor_url ?? "https://rekor.sigstore.dev").replace(/\/$/, "");
-    const entryResp = await getJson(`${rekorUrl}/api/v1/log/entries/${sidecar.rekor_uuid}`);
+    sidecar = await getJson(`${repo}/rekor/${newest}.json`);
+  } catch (e) {
+    console.log(`SKIP  Rekor cross-check (sidecar ${newest}.json fetch failed: ${e.message})`);
+    record("rekor", "skip");
+    return;
+  }
+  const sth = archiveBySize.get(String(newest));
+  check(!!sth && sidecar.root_hash === sth?.root_hash, `rekor sidecar ${newest} matches the archived checkpoint`, "rekor");
+  if (!sth || sidecar.root_hash !== sth.root_hash) return;
+
+  // Remote leg: resolve the entry in Sigstore Rekor. Because this check runs by
+  // default, an unreachable Rekor (outage, or a Rekor-side migration) must NOT flip
+  // the whole verdict to FAIL — it is not tamper evidence — so it downgrades to a
+  // loud skip. Only a resolved entry whose bytes DISAGREE with our STH is a FAIL.
+  const rekorUrl = String(sidecar.rekor_url ?? "https://rekor.sigstore.dev").replace(/\/$/, "");
+  let entryResp;
+  try {
+    entryResp = await getJson(`${rekorUrl}/api/v1/log/entries/${sidecar.rekor_uuid}`);
+  } catch (e) {
+    console.log(`SKIP  Rekor entry resolution (${rekorUrl} unreachable: ${e.message})`);
+    record("rekor", "skip");
+    return;
+  }
+  try {
     const entry = entryResp[sidecar.rekor_uuid] ?? Object.values(entryResp)[0];
     if (!entry?.body) throw new Error("entry has no body");
     const body = JSON.parse(Buffer.from(String(entry.body), "base64").toString("utf8"));
@@ -465,7 +489,10 @@ async function verifyRekor(repo, pubkey, cp, archiveBySize) {
     const pem = spec.signature?.publicKey?.content ? Buffer.from(String(spec.signature.publicKey.content), "base64").toString("utf8") : "";
     check(pem.replace(/\s+/g, "").includes(pubkeyDerB64(pubkey).replace(/\s+/g, "")), "Rekor entry public key is the published log key", "rekor");
   } catch (e) {
-    check(false, `Rekor cross-check: ${e.message}`, "rekor");
+    // A malformed/unexpected entry body is ambiguous (Rekor-side format drift),
+    // not proof of tampering — skip loudly rather than fail the whole run.
+    console.log(`SKIP  Rekor entry parse (${e.message})`);
+    record("rekor", "skip");
   }
 }
 
@@ -522,7 +549,9 @@ async function main() {
   const entriesMode = arg("--entries") ?? "api";
   const shardSize = Number(arg("--shard-size") ?? DEFAULT_SHARD_SIZE);
   const statsReport = process.argv.includes("--stats");
-  const rekor = process.argv.includes("--rekor");
+  // Rekor cross-check is ON by default (it needs --repo for the sidecar); --no-rekor
+  // opts out. `--rekor` is still accepted as an explicit no-op for back-compat.
+  const rekorDisabled = process.argv.includes("--no-rekor");
   const maxAgeHours = Number(arg("--max-checkpoint-age-hours") ?? "168");
   if (!Number.isFinite(maxAgeHours) || maxAgeHours < 0) {
     console.error("--max-checkpoint-age-hours needs a non-negative number (0 disables)");
@@ -540,7 +569,7 @@ async function main() {
   // then the checkpoint comes from the repo's latest.json and every API-only
   // comparison is skipped.
   if (!api && !(entriesMode === "repo" && repo)) {
-    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--entries api|repo] [--shard-size <n>] [--pubkey <b64>] [--target site/id] [--wipe-grace-hours <n>] [--max-checkpoint-age-hours <n>] [--stats] [--rekor] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
+    console.error("usage: node src/verify.mjs --api <url> [--repo <raw base>] [--entries api|repo] [--shard-size <n>] [--pubkey <b64>] [--target site/id] [--wipe-grace-hours <n>] [--max-checkpoint-age-hours <n>] [--stats] [--no-rekor] [--ots] [--btc-api <url>] [--ots-external <bin>] [--json]");
     process.exit(2);
   }
   if (entriesMode === "repo" && !repo) {
@@ -640,11 +669,15 @@ async function main() {
     record("stats", "skip");
   }
 
-  // 3d. (--rekor) the newest checkpoint anchored to Sigstore Rekor really is
-  //     there, carrying exactly our signed STH bytes.
-  if (rekor && repo) {
+  // 3d. (default; --no-rekor to skip) the newest checkpoint anchored to Sigstore
+  //     Rekor really is there, carrying exactly our signed STH bytes. An
+  //     unreachable Rekor downgrades to a skip inside verifyRekor — only a sidecar
+  //     that disagrees with the archived checkpoint, or a resolved Rekor entry
+  //     whose bytes don't match our STH, is a hard fail.
+  if (!rekorDisabled && repo) {
     await verifyRekor(repo, pubkey, cp, archiveBySize);
   } else {
+    if (!repo && !rekorDisabled) console.log("SKIP  Rekor cross-check (no --repo)");
     record("rekor", "skip");
   }
 

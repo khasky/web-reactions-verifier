@@ -93,7 +93,7 @@ Pass `--pubkey` only to verify a different deployment or fork.
 - `--wipe-grace-hours N` (optional, default 48): grace window for the account-wipe completeness check — a pseudonym whose newest revocation is younger than this (relative to the checkpoint) counts as a wipe still in flight. A policy knob, not a proof parameter; auditors of a quiescent log may tighten it to `0`.
 - `--max-checkpoint-age-hours N` (optional, default 168, `0` disables): flag a checkpoint older than this — a frozen snapshot passing every other check is still a stale view. A quiet log ages legitimately (checkpoints only advance on new votes), hence the generous default.
 - `--stats` (optional): print a per-day CSV (reactions, distinct pseudonymous authors, revocations) derived from the entries alone.
-- `--rekor` (optional, needs `--repo`): cross-check the newest `rekor/<tree_size>.json` sidecar against the actual Sigstore Rekor entry — an independently operated public log must hold exactly our signed checkpoint bytes.
+- `--no-rekor` (optional): skip the Rekor cross-check. It runs **by default** whenever `--repo` is set — the newest `rekor/<tree_size>.json` sidecar is cross-checked against the actual Sigstore Rekor entry, an independently operated public log that must hold exactly our signed checkpoint bytes. An unreachable Rekor (outage / Rekor-side migration) downgrades to a skip, not a fail; only a sidecar that disagrees with the archived checkpoint, or a resolved Rekor entry whose bytes don't match our STH, fails. (`--rekor` is still accepted as an explicit no-op.)
 - `--ots` (optional): also run the OpenTimestamps→Bitcoin deep audit (below). Needs `--repo`; slower and only passes after an OTS proof has matured.
 - `--btc-api <url>` (optional, with `--ots`): override the Esplora-compatible Bitcoin block-header source (default: `https://blockstream.info/api`).
 - `--ots-external <bin>` (optional, with `--ots`): also cross-check the same proof with an external OpenTimestamps CLI such as `ots`.
@@ -111,7 +111,7 @@ Pass `--pubkey` only to verify a different deployment or fork.
 8. The published revocation list matches the revocations actually present in the log.
 9. The log is internally consistent — every entry is well-formed and no count is ever driven impossibly negative.
 10. Account wipes are complete — revocations are whole-account, so once any entry of a pseudonym is revoked, every entry of that pseudonym must be revoked. A partially revoked pseudonym is flagged, after a 48-hour grace window for wipes still in flight (`--wipe-grace-hours`).
-11. (with `--rekor`) the newest Rekor sidecar resolves to a real Sigstore Rekor entry carrying exactly our signed checkpoint bytes, signature, and public key.
+11. (by default, with `--repo`; `--no-rekor` to skip) the newest Rekor sidecar resolves to a real Sigstore Rekor entry carrying exactly our signed checkpoint bytes, signature, and public key. An unreachable Rekor is a skip, not a fail.
 12. (with `--ots`) the matured OpenTimestamps proof anchors the signed root in a Bitcoin block.
 
 ### Revocations and account deletion

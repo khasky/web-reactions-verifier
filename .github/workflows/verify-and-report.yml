@@ -15,7 +15,9 @@
 # Note: --ots is intentionally omitted. OpenTimestamps matures over hours–days, so a
 # young log has no Bitcoin proof yet and --ots would report FAIL; the Bitcoin component
 # is derived separately (and leniently) by the Worker. This job covers the core
-# tamper-evidence checks (signature, Merkle re-fold, counters, revocations, invariants).
+# tamper-evidence checks (signature, Merkle re-fold, counters, revocations, invariants)
+# plus the Sigstore Rekor cross-check, which now runs by default (an unreachable Rekor
+# downgrades to a skip, so a third-party outage can't flip this verdict to FAIL).
 
 name: verify-and-report
 
